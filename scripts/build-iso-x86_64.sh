@@ -48,7 +48,9 @@ KERNEL_PROFILE="release"
 KERNEL_BIN="target/${KERNEL_TARGET}/${KERNEL_PROFILE}/hyperion-kernel"
 EFI_TARGET="x86_64-unknown-uefi"
 EFI_BIN="target/${EFI_TARGET}/${KERNEL_PROFILE}/hyperion-efi-stub.efi"
+# ISO9660 volume id can be up to 32 chars; FAT label must be <= 11.
 VOLID="HYPERION_${MODE^^}"
+FAT_LABEL="HYP_${MODE^^}"
 
 build_kernel() {
     echo "==> building x86_64 kernel"
@@ -154,7 +156,7 @@ build_uefi() {
     # Embedded kernel + UEFI loader headroom.
     ESP_SIZE_KIB=16384
     truncate -s "${ESP_SIZE_KIB}KiB" "$ESP_IMG"
-    mkfs.vfat -F 16 -n "$VOLID" "$ESP_IMG" >/dev/null
+    mkfs.vfat -F 16 -n "$FAT_LABEL" "$ESP_IMG" >/dev/null
 
     mmd -i "$ESP_IMG" ::EFI ::EFI/BOOT
     mcopy -i "$ESP_IMG" "$EFI_BIN" "::EFI/BOOT/BOOTX64.EFI"
