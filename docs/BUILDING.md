@@ -13,11 +13,17 @@
 - **A linker for aarch64.** The pinned `.cargo/config.toml` invokes
   `rust-lld` via `lld-link` so you don't need a system cross-linker, but
   installing `aarch64-linux-gnu-gcc` / `aarch64-elf-gcc` is harmless.
-- **AAVMF UEFI firmware** (only needed for `make run-efi`) — on
-  Debian/Ubuntu install `qemu-efi-aarch64`; on Fedora/RHEL install
-  `edk2-aarch64`. The Makefile expects `/usr/share/AAVMF/AAVMF_CODE.fd`
-  and `AAVMF_VARS.fd` by default; override `AAVMF_CODE` / `AAVMF_VARS`
+- **AAVMF UEFI firmware** (only needed for `make run-efi` /
+  `make run-iso` / `make run-usb`) — on Debian/Ubuntu install
+  `qemu-efi-aarch64`; on Fedora/RHEL install `edk2-aarch64`. The
+  Makefile expects `/usr/share/AAVMF/AAVMF_CODE.fd` and
+  `AAVMF_VARS.fd` by default; override `AAVMF_CODE` / `AAVMF_VARS`
   if your distro keeps them elsewhere.
+- **ISO / USB image tooling** (only needed for `make iso` /
+  `make usb-img`) — `xorriso`, `mtools`, `dosfstools`, and
+  `gdisk` (provides `sgdisk`). On Debian/Ubuntu:
+  `sudo apt-get install xorriso mtools dosfstools gdisk`. On
+  Fedora/RHEL: `sudo dnf install xorriso mtools dosfstools gdisk`.
 
 ## Build
 
@@ -96,6 +102,77 @@ Test pattern painted; halting.
 The stub currently halts after painting; the kernel-handover patch
 (`ExitBootServices` + jump to `kmain` with a populated `BootInfo`) is
 the next iteration.
+
+## Bootable ISO and USB image
+
+Hyperion can also be packaged into installer-style media that boot on
+real ARM64 UEFI hardware (servers, dev boards with UEFI firmware,
+Raspberry Pi 4/5 with the Tianocore RPi build, etc.) and that can be
+flashed to a USB stick from any host OS — including Windows via Rufus
+in DD-image mode.
+
+```sh
+make iso           # produces target/hyperion.iso
+make usb-img       # produces target/hyperion-usb.img
+```
+
+Both artefacts wrap the same `BOOTAA64.EFI` payload:
+
+| Artefact                  | Layout                                   | Use case                                                  |
+|---------------------------|------------------------------------------|-----------------------------------------------------------|
+| `target/hyperion.iso`     | hybrid ARM64 UEFI ISO (ISO9660 + GPT)    | burn to optical media, mount as virtual CD, or `dd` to USB |
+| `target/hyperion-usb.img` | raw GPT-partitioned disk image with ESP  | flash directly to a USB stick / SD card                   |
+
+UEFI firmware on every target finds and runs
+`/EFI/BOOT/BOOTAA64.EFI` (the architectural removable-media fallback
+path) from the EFI System Partition embedded in either artefact.
+
+### Flash the USB image
+
+The raw `.img` is intentionally byte-identical to what should land on
+the USB stick — no installer wrapper, no auto-extracting layer.
+
+- **Windows (Rufus):** open Rufus → "SELECT" → pick
+  `target/hyperion-usb.img`. When Rufus prompts for image mode, choose
+  **"Write in DD Image mode"** (not ISO mode). Click "START".
+- **Windows (Win32DiskImager / balenaEtcher):** open the tool, point
+  it at `target/hyperion-usb.img`, pick the USB stick, write.
+- **Linux:**
+  ```sh
+  sudo dd if=target/hyperion-usb.img of=/dev/sdX bs=4M \
+      status=progress conv=fsync
+  sync
+  ```
+- **macOS:**
+  ```sh
+  diskutil unmountDisk /dev/diskN
+  sudo dd if=target/hyperion-usb.img of=/dev/rdiskN bs=4m
+  ```
+
+The hybrid ISO can be flashed identically (`dd` / Rufus DD mode).
+Rufus's "ISO mode" tries to repackage the ISO and won't work for an
+ARM64 EFI-only image; always pick DD mode.
+
+### Smoke-test the ISO and USB image under QEMU
+
+```sh
+make run-iso       # boots target/hyperion.iso under QEMU + AAVMF
+make run-usb       # boots target/hyperion-usb.img under QEMU + AAVMF
+```
+
+Expected output on either target:
+
+```
+BdsDxe: starting Boot000? "UEFI ..."
+
+Hyperion EFI stub starting...
+GOP framebuffer @ 0x0000000058430000 size=0x0000000000300000
+  resolution=800x600 stride=800 pixfmt=1
+Test pattern painted; halting.
+```
+
+If you see that, the boot chain is healthy and the artefact will boot
+on real ARM64 UEFI hardware too. (`Ctrl-A x` quits QEMU.)
 
 ## Inspecting the ELF
 

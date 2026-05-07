@@ -70,6 +70,13 @@ make run
 # Or boot via UEFI firmware (AAVMF) end-to-end:
 sudo apt install qemu-efi-aarch64        # Debian/Ubuntu
 make run-efi
+
+# Or build a bootable ISO / USB image (Rufus DD-mode flashable):
+sudo apt install xorriso mtools dosfstools gdisk
+make iso        # -> target/hyperion.iso
+make usb-img    # -> target/hyperion-usb.img
+make run-iso    # smoke-test the ISO under QEMU + AAVMF
+make run-usb    # smoke-test the USB image under QEMU + AAVMF
 ```
 
 You should see:
@@ -123,6 +130,7 @@ hyperion-os/
 │   └── linker.ld
 ├── efi-stub/           # aarch64-unknown-uefi UEFI boot stub (.efi)
 ├── libos-api/          # Stable, no_std-friendly public surface
+├── scripts/            # build-iso.sh / build-usb-img.sh (bootable media)
 └── docs/               # Architecture, building, porting, integration, UI API
 ```
 
@@ -132,6 +140,11 @@ hyperion-os/
 - **QEMU `virt` + AAVMF UEFI firmware** — `efi-stub/` boots end-to-end,
   discovers the UEFI GOP framebuffer, paints a test pattern. Kernel
   handover from the stub is the next iteration.
+- **Hybrid ARM64 UEFI ISO** (`make iso`) — bootable on real ARM64 UEFI
+  systems via optical media, virtual CD, or `dd`/Rufus to USB.
+- **Raw GPT-partitioned USB image** (`make usb-img`) — drop straight
+  onto a USB stick with Rufus (DD mode), `dd`, or balenaEtcher; boots
+  on any UEFI ARM64 box.
 - **DT-described ARM64 boards** with a PL011, 16550-compatible, or
   BCM mini-UART console and a GICv2 or GICv3 interrupt controller — should
   work once the bootloader hands the kernel a DTB and jumps to `_start`.
