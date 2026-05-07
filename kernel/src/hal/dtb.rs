@@ -18,7 +18,7 @@
 //! which keeps the existing `-kernel` boot path working.
 
 use super::boot_info::{
-    BootInfo, ConsoleKind, ConsoleSpec, FramebufferInfo, GicSpec, GicVersion, MemoryMap,
+    BootInfo, ConsoleKind, ConsoleSpec, FramebufferInfo, IntcKind, IntcSpec, MemoryMap,
     MemoryRegion, PixelFormat, RegSpec,
 };
 
@@ -107,7 +107,7 @@ unsafe fn slice_at<'a>(addr: u64, len: usize) -> &'a [u8] {
 /// fallback.
 pub unsafe fn parse_or_fallback(dtb_addr: u64) -> BootInfo {
     let mut info = BootInfo::qemu_virt_fallback();
-    info.dtb_addr = dtb_addr;
+    info.fw_table_addr = dtb_addr;
     if dtb_addr == 0 {
         return info;
     }
@@ -431,7 +431,7 @@ fn act_on_node(
             // Replace the fallback's first push the *first* time we see a
             // real memory node, to avoid keeping the QEMU-virt 256 MiB
             // default that lives in the fallback.
-            if info.dtb_addr != 0
+            if info.fw_table_addr != 0
                 && info.memory.as_slice().len() == 1
                 && info.memory.as_slice()[0].base == 0x4000_0000
                 && info.memory.as_slice()[0].size == 256 * 1024 * 1024
@@ -446,10 +446,10 @@ fn act_on_node(
     // GIC: pick by compatible, irrespective of node name.
     if compatible_matches(compatible, &["arm,gic-v3"]) {
         if let Some((base, size)) = reg {
-            info.gic = GicSpec {
-                version: GicVersion::V3,
-                dist: RegSpec::new(base, size),
-                cpu_or_redist: info.gic.cpu_or_redist,
+            info.intc = IntcSpec {
+                kind: IntcKind::GicV3,
+                primary: RegSpec::new(base, size),
+                secondary: info.intc.secondary,
             };
         }
         return;
@@ -464,10 +464,10 @@ fn act_on_node(
         ],
     ) {
         if let Some((base, size)) = reg {
-            info.gic = GicSpec {
-                version: GicVersion::V2,
-                dist: RegSpec::new(base, size),
-                cpu_or_redist: info.gic.cpu_or_redist,
+            info.intc = IntcSpec {
+                kind: IntcKind::GicV2,
+                primary: RegSpec::new(base, size),
+                secondary: info.intc.secondary,
             };
         }
         return;
@@ -493,7 +493,7 @@ fn act_on_node(
                         clock_hz,
                     };
                 }
-            } else if info.dtb_addr != 0
+            } else if info.fw_table_addr != 0
                 && info.console.regs.base == 0x0900_0000
                 && info.console.kind == ConsoleKind::Pl011
             {

@@ -19,9 +19,12 @@
 
 pub mod boot_info;
 pub mod console;
+#[cfg(target_arch = "aarch64")]
 pub mod dtb;
+#[cfg(target_arch = "x86_64")]
+pub mod multiboot;
 
-pub use boot_info::{BootInfo, ConsoleKind, GicVersion, MemoryRegion, RegSpec};
+pub use boot_info::{BootInfo, ConsoleKind, IntcKind, MemoryRegion, RegSpec};
 
 use core::sync::atomic::{AtomicBool, Ordering};
 

@@ -26,16 +26,27 @@ pub enum ConsoleKind {
     BcmMiniUart,
 }
 
-/// Hardware-defined identifier for the interrupt controller.
+/// Hardware-defined identifier for the boot interrupt controller.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GicVersion {
-    /// GICv2 (memory-mapped distributor + CPU interface). QEMU virt
+pub enum IntcKind {
+    /// ARM GICv2 (memory-mapped distributor + CPU interface). QEMU virt
     /// default, Cortex-A15/A53 era boards.
-    V2,
-    /// GICv3 (memory-mapped distributor + system-register CPU interface).
-    /// Modern server-class ARM and Apple-class CPUs.
-    V3,
+    GicV2,
+    /// ARM GICv3 (memory-mapped distributor + system-register CPU
+    /// interface). Modern server-class ARM and Apple-class CPUs.
+    GicV3,
+    /// Intel/AMD Local APIC + I/O APIC. The amd64 default. `primary`
+    /// is the LAPIC MMIO base; `secondary` is the I/O APIC MMIO base.
+    Apic,
+    /// Legacy Intel 8259 master/slave PIC pair. Used as a fallback on
+    /// pre-APIC x86 hardware. We never use it directly; on amd64 we
+    /// always switch to APIC and only mask the PIC off.
+    Pic8259,
 }
+
+/// Backwards-compatible alias so older code that still references
+/// "GIC version" reads cleanly.
+pub use IntcKind as GicVersion;
 
 /// A single MMIO range, in physical address space.
 #[derive(Debug, Clone, Copy)]
@@ -103,19 +114,31 @@ pub struct BootInfo {
     /// out by the boot stub before this is published.
     pub memory: MemoryMap,
 
-    /// Generic interrupt controller: version + register windows.
-    pub gic: GicSpec,
+    /// Boot interrupt controller: kind + register windows.
+    pub intc: IntcSpec,
 
-    /// ARM Generic Timer frequency in Hz (matches `CNTFRQ_EL0`). 0 means
-    /// "fall back to reading the register".
+    /// Boot timer frequency in Hz. On aarch64 this matches `CNTFRQ_EL0`;
+    /// on x86_64 it is the calibrated TSC frequency. 0 means "fall back
+    /// to a calibration loop or arch-default."
     pub timer_freq_hz: u32,
 
     /// Pre-existing framebuffer from firmware, if any.
     pub framebuffer: Option<FramebufferInfo>,
 
-    /// Physical address of the device tree blob (DTB), if there is one.
-    /// Zero means "no DTB" (e.g. UEFI with ACPI-only).
-    pub dtb_addr: u64,
+    /// Physical address of the firmware-supplied configuration table:
+    /// the device-tree blob on aarch64, the Multiboot2 info struct on
+    /// amd64-via-GRUB, or 0 when there isn't one (e.g. plain `-kernel`).
+    pub fw_table_addr: u64,
+}
+
+/// Backwards-compatible alias kept so callers that grew up with the
+/// aarch64-only schema still compile while we migrate them.
+impl BootInfo {
+    /// DTB address (aarch64) — alias of [`Self::fw_table_addr`].
+    #[inline]
+    pub fn dtb_addr(&self) -> u64 {
+        self.fw_table_addr
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -128,11 +151,33 @@ pub struct ConsoleSpec {
 }
 
 #[derive(Clone, Copy)]
-pub struct GicSpec {
-    pub version: GicVersion,
-    pub dist: RegSpec,
-    /// GICv2: CPU interface region. GICv3: redistributor region.
-    pub cpu_or_redist: RegSpec,
+pub struct IntcSpec {
+    pub kind: IntcKind,
+    /// GIC distributor on aarch64; LAPIC base on x86_64.
+    pub primary: RegSpec,
+    /// GICv2 CPU interface or GICv3 redistributor on aarch64; I/O APIC
+    /// base on x86_64.
+    pub secondary: RegSpec,
+}
+
+/// Backwards-compatible alias for the pre-refactor name. Kept so the
+/// aarch64 GIC driver doesn't need a sweeping rename.
+pub use IntcSpec as GicSpec;
+
+impl IntcSpec {
+    /// `intc.dist` was the aarch64 GIC distributor; new code uses
+    /// [`Self::primary`].
+    #[inline]
+    pub fn dist(&self) -> RegSpec {
+        self.primary
+    }
+
+    /// `intc.cpu_or_redist` was the aarch64 GIC CPU interface /
+    /// redistributor; new code uses [`Self::secondary`].
+    #[inline]
+    pub fn cpu_or_redist(&self) -> RegSpec {
+        self.secondary
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -202,14 +247,47 @@ impl BootInfo {
                 m.len = 1;
                 m
             },
-            gic: GicSpec {
-                version: GicVersion::V2,
-                dist: RegSpec::new(0x0800_0000, 0x10000),
-                cpu_or_redist: RegSpec::new(0x0801_0000, 0x10000),
+            intc: IntcSpec {
+                kind: IntcKind::GicV2,
+                primary: RegSpec::new(0x0800_0000, 0x10000),
+                secondary: RegSpec::new(0x0801_0000, 0x10000),
             },
             timer_freq_hz: 0, // read from CNTFRQ_EL0
             framebuffer: None,
-            dtb_addr: 0,
+            fw_table_addr: 0,
+        }
+    }
+
+    /// Compile-time fallback for QEMU's `q35` x86_64 machine — used
+    /// only when boot discovery (Multiboot2 / UEFI handoff) couldn't
+    /// describe the board. NS16550 COM1 at 0x3F8, LAPIC at the standard
+    /// reset base (0xFEE0_0000), I/O APIC at 0xFEC0_0000.
+    pub const fn qemu_q35_fallback() -> Self {
+        Self {
+            console: ConsoleSpec {
+                kind: ConsoleKind::Ns16550,
+                regs: RegSpec::new(0x3F8, 8),
+                clock_hz: 1_843_200,
+            },
+            memory: {
+                let mut m = MemoryMap::empty();
+                // 128 MiB starting at the 1 MiB mark. SeaBIOS leaves us
+                // 0x1_0000..0xA_0000 of low RAM; the high RAM extends
+                // up to whatever the firmware reported. We pick a
+                // conservative window so we boot even if Multiboot2
+                // tags are missing.
+                m.regions[0] = MemoryRegion::new(0x10_0000, 128 * 1024 * 1024);
+                m.len = 1;
+                m
+            },
+            intc: IntcSpec {
+                kind: IntcKind::Apic,
+                primary: RegSpec::new(0xFEE0_0000, 0x1000),
+                secondary: RegSpec::new(0xFEC0_0000, 0x1000),
+            },
+            timer_freq_hz: 0, // calibrate via PIT
+            framebuffer: None,
+            fw_table_addr: 0,
         }
     }
 }
@@ -220,12 +298,12 @@ impl fmt::Debug for BootInfo {
             .field("console", &(self.console.kind, self.console.regs))
             .field("memory", &self.memory)
             .field(
-                "gic",
-                &(self.gic.version, self.gic.dist, self.gic.cpu_or_redist),
+                "intc",
+                &(self.intc.kind, self.intc.primary, self.intc.secondary),
             )
             .field("timer_freq_hz", &self.timer_freq_hz)
             .field("framebuffer", &self.framebuffer)
-            .field("dtb_addr", &format_args!("{:#x}", self.dtb_addr))
+            .field("fw_table_addr", &format_args!("{:#x}", self.fw_table_addr))
             .finish()
     }
 }

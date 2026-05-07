@@ -16,6 +16,7 @@
 //!    timer, and brings up the GIC.
 
 pub mod boot;
+pub mod context;
 pub mod exceptions;
 pub mod gic;
 pub mod mmu;
