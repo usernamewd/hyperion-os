@@ -30,6 +30,18 @@ pub fn late_init() {
     x86_64::late_init();
 }
 
+/// Bring up secondary CPUs, if the architecture supports SMP.
+///
+/// On aarch64 this issues PSCI CPU_ON for every secondary up to
+/// [`aarch64::boot::MAX_CPUS`]; secondaries land in
+/// [`aarch64::smp::hyperion_kernel_secondary_main`] and online
+/// themselves. On x86_64 we currently boot only the BSP, so this is a
+/// no-op.
+pub fn start_secondaries() {
+    #[cfg(target_arch = "aarch64")]
+    aarch64::smp::start_secondaries();
+}
+
 /// Halt the current CPU forever. Disables interrupts before stalling so
 /// nothing can wake us back up. Used as the final stop in panic /
 /// shutdown paths.

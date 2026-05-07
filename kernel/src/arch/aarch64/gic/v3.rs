@@ -143,6 +143,40 @@ pub unsafe fn init(gicd: usize, gicr: usize) {
     }
 }
 
+/// Per-CPU bring-up for a secondary. The distributor is already
+/// configured by [`init`]; each secondary needs to wake its own
+/// re-distributor and enable Group 1 NS interrupts on its CPU
+/// interface.
+pub fn init_per_cpu() {
+    let gicr = STATE.lock().gicr;
+    if gicr == 0 {
+        return;
+    }
+    // SAFETY: re-distributor mapped identity. Note: this assumes
+    // every CPU shares the same RD_base. On QEMU virt the
+    // re-distributors are contiguous in memory and the boot CPU's RD
+    // is the only one we currently store; for a >2 CPU system you'd
+    // index in by CPU id.
+    unsafe {
+        let waker_addr = gicr + GICR_WAKER;
+        let mut w = r32(waker_addr);
+        w &= !GICR_WAKER_PROC_SLEEP;
+        w32(waker_addr, w);
+        for _ in 0..1_000_000 {
+            if r32(waker_addr) & GICR_WAKER_CHILDREN_ASLEEP == 0 {
+                break;
+            }
+            core::hint::spin_loop();
+        }
+    }
+    // SAFETY: privileged sysregs, safe at EL1.
+    unsafe {
+        write_icc_sre_el1(1);
+        write_icc_pmr_el1(0xff);
+        write_icc_igrpen1_el1(1);
+    }
+}
+
 /// Enable PPI `intid` (16..=31) at this CPU's re-distributor.
 pub fn enable_ppi(intid: u32) {
     let s = STATE.lock();

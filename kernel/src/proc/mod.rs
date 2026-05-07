@@ -11,9 +11,12 @@
 //! VMM in.
 
 pub mod context;
+pub mod percpu;
 pub mod process;
 pub mod scheduler;
 pub mod thread;
+#[cfg(target_arch = "aarch64")]
+pub mod user;
 
 pub use process::{Pid, Process};
 pub use thread::{Thread, ThreadState, Tid};

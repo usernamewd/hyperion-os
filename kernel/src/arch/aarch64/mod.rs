@@ -21,6 +21,7 @@ pub mod exceptions;
 pub mod gic;
 pub mod mmu;
 pub mod psci;
+pub mod smp;
 pub mod timer;
 
 /// Late architecture initialisation, called from [`crate::kmain`] after the
