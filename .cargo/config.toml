@@ -1,0 +1,26 @@
+# Hyperion OS cargo config.
+#
+# Building the kernel requires the `aarch64-unknown-none` target. Running
+# `cargo build -p hyperion-kernel` (or `cargo xbuild`) from the workspace root
+# will use the per-package config below.
+
+[build]
+# The workspace is a mix of host crates (libos-api builds for the host, useful
+# for tests/docs) and a no_std kernel crate. We keep the default target as the
+# host so plain `cargo build` works for `libos-api`. Build the kernel via
+# `cargo build -p hyperion-kernel --target aarch64-unknown-none --release` or
+# the provided Makefile.
+
+[target.aarch64-unknown-none]
+rustflags = [
+    "-C", "link-arg=-Tkernel/linker.ld",
+    "-C", "link-arg=--no-eh-frame-hdr",
+    "-C", "target-cpu=cortex-a72",
+    "-C", "force-frame-pointers=yes",
+    "-C", "relocation-model=static",
+    "-C", "code-model=small",
+]
+runner = "qemu-system-aarch64 -M virt -cpu cortex-a72 -smp 1 -m 512M -nographic -semihosting -kernel"
+
+[unstable]
+# (none — stable toolchain)

@@ -1,0 +1,32 @@
+[package]
+name = "hyperion-kernel"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "The Hyperion OS microkernel."
+
+[lib]
+name = "hyperion_kernel"
+path = "src/lib.rs"
+
+[[bin]]
+name = "hyperion-kernel"
+path = "src/main.rs"
+
+[dependencies]
+hyperion-os-api = { path = "../libos-api", default-features = false }
+spin = { version = "0.9", default-features = false, features = ["mutex", "spin_mutex", "rwlock", "once"] }
+linked_list_allocator = { version = "0.10", default-features = false }
+bitflags = { version = "2.6", default-features = false }
+log = { version = "0.4", default-features = false }
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "warn"
+
+[lints.clippy]
+missing_safety_doc = "allow"
+new_without_default = "allow"
+needless_return = "allow"
+upper_case_acronyms = "allow"

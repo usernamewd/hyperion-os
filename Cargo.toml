@@ -1,0 +1,32 @@
+[workspace]
+resolver = "2"
+members = [
+    "kernel",
+    "libos-api",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+authors = ["Hyperion OS contributors"]
+repository = "https://github.com/usernamewd/hyperion-os"
+description = "Hyperion: a small, integratable aarch64 microkernel with display, IPC, ramfs and a UI building API."
+
+[profile.release]
+opt-level = 3
+debug = true
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+overflow-checks = false
+
+[profile.dev]
+opt-level = 1
+debug = true
+panic = "abort"
+overflow-checks = true
+
+# Optimize a few hot deps even in dev to keep boot snappy
+[profile.dev.package."*"]
+opt-level = 3
