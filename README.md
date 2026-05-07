@@ -1,14 +1,14 @@
 # Hyperion OS
 
-A small, integratable **aarch64 microkernel** written in Rust, designed to be the
-foundation for higher-level OS / UI projects (think HarmonyOS-style layered
-systems, but at a much smaller scale).
+A small, integratable **aarch64/x86_64 microkernel** written in Rust, designed
+to be the foundation for higher-level OS / UI projects (think HarmonyOS-style
+layered systems, but at a much smaller scale).
 
 > Status: **educational / proof-of-concept**. Hyperion boots end-to-end on
-> QEMU `virt` aarch64 (and is structured to boot on real DT- and UEFI-based
-> ARM64 hardware via the same kernel ELF). It drops you into an interactive
-> shell and exposes a stable C-ABI / Rust API surface that custom OSes and UI
-> stacks can build on top of. It is **not** production grade.
+> QEMU `virt` aarch64 and x86_64 (and is structured to boot on real DT- and
+> UEFI-based ARM64 hardware via the same kernel ELF). It drops you into an
+> interactive shell and exposes a stable C-ABI / Rust API surface that custom
+> OSes and UI stacks can build on top of. It is **not** production grade.
 
 ## What's in the box
 
@@ -27,7 +27,7 @@ systems, but at a much smaller scale).
   (`ICC_*_EL1`).
 - **Memory management** — bitmap **PMM** sized from `BootInfo`'s memory map,
   identity-mapped **MMU** plumbing, `linked_list_allocator`-backed **kernel
-  heap**, VMM placeholder ready for EL0.
+  heap**, and page-granular process address-space mappings ready for EL0.
 - **Microkernel core** — `Process` / `Thread` / `AddressSpace` types with a
   cooperative-preemptive **round-robin scheduler** driven by the CNTV timer.
 - **IPC** — capability handles + bounded message **ports** (32 messages,
@@ -58,8 +58,8 @@ systems, but at a much smaller scale).
 
 ```sh
 # Toolchain — pinned via rust-toolchain.toml (Rust 1.83.0).
-rustup target add aarch64-unknown-none
-rustup target add aarch64-unknown-uefi   # only needed for `make efi`
+rustup target add aarch64-unknown-none aarch64-unknown-uefi \
+    x86_64-unknown-none x86_64-unknown-uefi
 
 # Build the kernel.
 make build
@@ -71,12 +71,13 @@ make run
 sudo apt install qemu-efi-aarch64        # Debian/Ubuntu
 make run-efi
 
-# Or build a bootable ISO / USB image (Rufus DD-mode flashable):
-sudo apt install xorriso mtools dosfstools gdisk
-make iso        # -> target/hyperion.iso
-make usb-img    # -> target/hyperion-usb.img
-make run-iso    # smoke-test the ISO under QEMU + AAVMF
-make run-usb    # smoke-test the USB image under QEMU + AAVMF
+# Or build bootable ISO / USB images:
+sudo apt install xorriso mtools dosfstools gdisk grub-pc-bin grub-efi-amd64-bin
+make iso                     # aarch64: target/hyperion-aarch64-uefi.iso
+make ARCH=x86_64 iso         # x86_64: BIOS and UEFI ISOs
+make usb-img                 # aarch64 raw USB image
+make run-iso                 # smoke-test the UEFI ISO under QEMU + AAVMF
+make run-usb                 # smoke-test the USB image under QEMU + AAVMF
 ```
 
 You should see:
@@ -115,11 +116,11 @@ To exit QEMU at any time: `Ctrl-A x`.
 
 ```
 hyperion-os/
-├── kernel/             # The microkernel itself (no_std, aarch64-unknown-none)
+├── kernel/             # The microkernel itself (no_std, aarch64/x86_64)
 │   ├── src/arch/       # aarch64 boot, exceptions, GIC v2/v3, timer, MMU, PSCI
 │   ├── src/hal/        # BootInfo / DTB parser / Console trait
 │   ├── src/drivers/    # UART drivers (PL011, 16550, BCM mini-UART)
-│   ├── src/mm/         # PMM, heap, VMM placeholder
+│   ├── src/mm/         # PMM, heap, VMM address-space mappings
 │   ├── src/proc/       # threads, processes, scheduler, context switch
 │   ├── src/ipc/        # capability table + message ports
 │   ├── src/fs/         # VFS trait + ramfs
@@ -140,8 +141,12 @@ hyperion-os/
 - **QEMU `virt` + AAVMF UEFI firmware** — `efi-stub/` boots end-to-end,
   discovers the UEFI GOP framebuffer, paints a test pattern. Kernel
   handover from the stub is the next iteration.
-- **Hybrid ARM64 UEFI ISO** (`make iso`) — bootable on real ARM64 UEFI
-  systems via optical media, virtual CD, or `dd`/Rufus to USB.
+- **ARM64 UEFI ISO** (`make iso`) — bootable on real ARM64 UEFI systems
+  via optical media, virtual CD, or `dd`/Rufus to USB.
+- **x86_64 Legacy BIOS ISO** (`make ARCH=x86_64 iso-bios`) — GRUB BIOS
+  image for CSM/legacy systems.
+- **x86_64 UEFI ISO** (`make ARCH=x86_64 iso-uefi`) — GRUB EFI image for
+  modern x86_64 firmware.
 - **Raw GPT-partitioned USB image** (`make usb-img`) — drop straight
   onto a USB stick with Rufus (DD mode), `dd`, or balenaEtcher; boots
   on any UEFI ARM64 box.

@@ -9,8 +9,8 @@
 # Common targets:
 #   make build            - build the kernel for $(ARCH)
 #   make debug            - build the kernel (dev profile) for $(ARCH)
-#   make iso              - build a hybrid bootable ISO for $(ARCH)
-#                           (aarch64: UEFI EFI stub; x86_64: BIOS+UEFI GRUB)
+#   make iso              - build bootable ISO(s) for $(ARCH)
+#                           (aarch64: UEFI; x86_64: BIOS and UEFI)
 #   make run              - boot under QEMU (serial-only, -kernel handoff)
 #   make run-bios         - x86_64: boot ISO under QEMU SeaBIOS (legacy BIOS)
 #   make run-uefi         - boot ISO under QEMU + UEFI (OVMF for x86_64,
@@ -40,7 +40,8 @@ ifeq ($(ARCH),aarch64)
     UEFI_CODE   ?= /usr/share/AAVMF/AAVMF_CODE.fd
     UEFI_VARS   ?= /usr/share/AAVMF/AAVMF_VARS.fd
     EFI_BOOT_FN := BOOTAA64.EFI
-    ISO_OUT     := target/hyperion.iso
+    UEFI_ISO_OUT := target/hyperion-aarch64-uefi.iso
+    ISO_OUT     := $(UEFI_ISO_OUT)
     USB_IMG     := target/hyperion-usb.img
 else ifeq ($(ARCH),x86_64)
     TARGET      := x86_64-unknown-none
@@ -51,7 +52,9 @@ else ifeq ($(ARCH),x86_64)
     UEFI_CODE   ?= /usr/share/OVMF/OVMF_CODE.fd
     UEFI_VARS   ?= /usr/share/OVMF/OVMF_VARS.fd
     EFI_BOOT_FN := BOOTX64.EFI
-    ISO_OUT     := target/hyperion-x86_64.iso
+    BIOS_ISO_OUT := target/hyperion-x86_64-bios.iso
+    UEFI_ISO_OUT := target/hyperion-x86_64-uefi.iso
+    ISO_OUT     := $(UEFI_ISO_OUT)
     USB_IMG     := target/hyperion-x86_64-usb.img
 else
     $(error unsupported ARCH=$(ARCH); choose aarch64 or x86_64)
@@ -70,7 +73,7 @@ ESP_VARS    := target/$(ARCH)-VARS.fd
 ISO_VARS    := target/$(ARCH)-VARS_iso.fd
 USB_VARS    := target/$(ARCH)-VARS_usb.fd
 
-.PHONY: build debug build-all efi esp iso usb-img run run-gfx run-efi \
+.PHONY: build debug build-all efi esp iso iso-bios iso-uefi usb-img run run-gfx run-efi \
         run-iso run-usb run-bios run-uefi run-debug \
         clippy clippy-all clippy-arch clippy-host fmt fmt-check doc clean
 
@@ -128,40 +131,56 @@ endif
 
 iso:
 ifeq ($(ARCH),aarch64)
-	./scripts/build-iso.sh $(ISO_OUT)
+	$(MAKE) ARCH=$(ARCH) iso-uefi
 else
-	./scripts/build-iso-x86_64.sh $(ISO_OUT)
+	$(MAKE) ARCH=$(ARCH) iso-bios
+	$(MAKE) ARCH=$(ARCH) iso-uefi
+endif
+
+iso-bios:
+ifeq ($(ARCH),x86_64)
+	./scripts/build-iso-x86_64.sh bios $(BIOS_ISO_OUT)
+else
+	@echo "BIOS ISO is x86_64-only."
+	exit 1
+endif
+
+iso-uefi:
+ifeq ($(ARCH),aarch64)
+	./scripts/build-iso.sh $(UEFI_ISO_OUT)
+else
+	./scripts/build-iso-x86_64.sh uefi $(UEFI_ISO_OUT)
 endif
 
 usb-img:
 ifeq ($(ARCH),aarch64)
 	./scripts/build-usb-img.sh $(USB_IMG)
 else
-	@echo "x86_64 USB image: 'make ARCH=x86_64 iso' produces a hybrid ISO that's directly dd-flashable."
+	@echo "x86_64 USB image: use 'make ARCH=x86_64 iso-bios' or 'make ARCH=x86_64 iso-uefi'."
 	exit 1
 endif
 
-run-bios: iso
+run-bios: iso-bios
 ifeq ($(ARCH),x86_64)
-	$(QEMU_SERIAL) -cdrom $(ISO_OUT)
+	$(QEMU_SERIAL) -cdrom $(BIOS_ISO_OUT)
 else
 	@echo "BIOS path is x86_64-only."
 	exit 1
 endif
 
-run-uefi: iso
+run-uefi: iso-uefi
 	cp $(UEFI_VARS) $(ISO_VARS)
 ifeq ($(ARCH),aarch64)
 	$(QEMU_BASE) -display none -serial stdio -device ramfb \
 	    -drive if=pflash,format=raw,readonly=on,file=$(UEFI_CODE) \
 	    -drive if=pflash,format=raw,file=$(ISO_VARS) \
-	    -drive media=cdrom,file=$(ISO_OUT),if=none,id=cd0 \
+	    -drive media=cdrom,file=$(UEFI_ISO_OUT),if=none,id=cd0 \
 	    -device virtio-scsi-pci -device scsi-cd,drive=cd0
 else
 	$(QEMU_SERIAL) \
 	    -drive if=pflash,format=raw,readonly=on,file=$(UEFI_CODE) \
 	    -drive if=pflash,format=raw,file=$(ISO_VARS) \
-	    -cdrom $(ISO_OUT)
+	    -cdrom $(UEFI_ISO_OUT)
 endif
 
 run-iso: run-uefi
@@ -174,7 +193,7 @@ ifeq ($(ARCH),aarch64)
 	    -drive if=pflash,format=raw,file=$(USB_VARS) \
 	    -drive if=virtio,format=raw,file=$(USB_IMG)
 else
-	@echo "USB image is aarch64-only; on x86_64 the ISO is hybrid (dd it directly)."
+	@echo "USB image is aarch64-only; use the x86_64 BIOS or UEFI ISO directly."
 	exit 1
 endif
 

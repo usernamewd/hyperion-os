@@ -4,10 +4,9 @@
 
 - **Rust 1.83.0** (pinned via `rust-toolchain.toml`). `rustup` will
   install the right toolchain automatically the first time you build.
-- **`aarch64-unknown-none` target** —
-  `rustup target add aarch64-unknown-none`.
-- **`aarch64-unknown-uefi` target** (only needed if you build the UEFI
-  boot stub) — `rustup target add aarch64-unknown-uefi`.
+- **Rust targets** — `aarch64-unknown-none`, `aarch64-unknown-uefi`,
+  `x86_64-unknown-none`, and `x86_64-unknown-uefi` are listed in
+  `rust-toolchain.toml`; `rustup` installs them automatically.
 - **QEMU 6.0+** with aarch64 system emulation
   (`qemu-system-aarch64`). Tested on QEMU 6.2 and 8.x.
 - **A linker for aarch64.** The pinned `.cargo/config.toml` invokes
@@ -20,16 +19,20 @@
   `AAVMF_VARS.fd` by default; override `AAVMF_CODE` / `AAVMF_VARS`
   if your distro keeps them elsewhere.
 - **ISO / USB image tooling** (only needed for `make iso` /
-  `make usb-img`) — `xorriso`, `mtools`, `dosfstools`, and
-  `gdisk` (provides `sgdisk`). On Debian/Ubuntu:
-  `sudo apt-get install xorriso mtools dosfstools gdisk`. On
-  Fedora/RHEL: `sudo dnf install xorriso mtools dosfstools gdisk`.
+  `make usb-img`) — `xorriso`, `mtools`, `dosfstools`, `gdisk`
+  (provides `sgdisk`), and GRUB platform modules for x86_64 media.
+  On Debian/Ubuntu:
+  `sudo apt-get install xorriso mtools dosfstools gdisk grub-pc-bin grub-efi-amd64-bin grub-common`.
+  On Fedora/RHEL: install the matching `xorriso`, `mtools`,
+  `dosfstools`, `gdisk`, and GRUB EFI/BIOS module packages.
 
 ## Build
 
 ```sh
-make build         # release kernel ELF at target/aarch64-unknown-none/release/hyperion-kernel
-make debug         # dev profile
+make build              # release kernel ELF for ARCH (default: aarch64)
+make ARCH=x86_64 build  # x86_64 release kernel ELF
+make build-all          # release kernel ELFs for aarch64 and x86_64
+make debug              # dev profile
 ```
 
 Or, with raw cargo:
@@ -105,27 +108,28 @@ the next iteration.
 
 ## Bootable ISO and USB image
 
-Hyperion can also be packaged into installer-style media that boot on
-real ARM64 UEFI hardware (servers, dev boards with UEFI firmware,
-Raspberry Pi 4/5 with the Tianocore RPi build, etc.) and that can be
-flashed to a USB stick from any host OS — including Windows via Rufus
-in DD-image mode.
+Hyperion can be packaged into firmware-specific boot media. ARM64 media
+is UEFI-only and wraps `BOOTAA64.EFI`; x86_64 builds produce separate
+Legacy BIOS and UEFI ISOs instead of a combined hybrid image.
 
 ```sh
-make iso           # produces target/hyperion.iso
-make usb-img       # produces target/hyperion-usb.img
+make iso                     # aarch64: target/hyperion-aarch64-uefi.iso
+make ARCH=x86_64 iso         # x86_64: BIOS and UEFI ISOs
+make ARCH=x86_64 iso-bios    # target/hyperion-x86_64-bios.iso
+make ARCH=x86_64 iso-uefi    # target/hyperion-x86_64-uefi.iso
+make usb-img                 # aarch64: target/hyperion-usb.img
 ```
 
-Both artefacts wrap the same `BOOTAA64.EFI` payload:
+| Artefact                            | Layout                                  | Use case                                |
+|-------------------------------------|-----------------------------------------|-----------------------------------------|
+| `target/hyperion-aarch64-uefi.iso`  | ARM64 UEFI ISO (ISO9660 + GPT)          | optical media, virtual CD, or USB flash |
+| `target/hyperion-x86_64-bios.iso`   | x86_64 GRUB BIOS El Torito ISO          | Legacy BIOS / CSM systems               |
+| `target/hyperion-x86_64-uefi.iso`   | x86_64 GRUB UEFI El Torito ISO          | Modern x86_64 UEFI systems              |
+| `target/hyperion-usb.img`           | raw GPT-partitioned disk image with ESP | ARM64 UEFI USB / SD card                |
 
-| Artefact                  | Layout                                   | Use case                                                  |
-|---------------------------|------------------------------------------|-----------------------------------------------------------|
-| `target/hyperion.iso`     | hybrid ARM64 UEFI ISO (ISO9660 + GPT)    | burn to optical media, mount as virtual CD, or `dd` to USB |
-| `target/hyperion-usb.img` | raw GPT-partitioned disk image with ESP  | flash directly to a USB stick / SD card                   |
-
-UEFI firmware on every target finds and runs
-`/EFI/BOOT/BOOTAA64.EFI` (the architectural removable-media fallback
-path) from the EFI System Partition embedded in either artefact.
+UEFI firmware on ARM64 finds and runs `/EFI/BOOT/BOOTAA64.EFI` from
+the EFI System Partition embedded in the ISO or USB image. x86_64 UEFI
+boots through GRUB EFI and x86_64 Legacy BIOS boots through GRUB BIOS.
 
 ### Flash the USB image
 
@@ -149,15 +153,17 @@ the USB stick — no installer wrapper, no auto-extracting layer.
   sudo dd if=target/hyperion-usb.img of=/dev/rdiskN bs=4m
   ```
 
-The hybrid ISO can be flashed identically (`dd` / Rufus DD mode).
-Rufus's "ISO mode" tries to repackage the ISO and won't work for an
-ARM64 EFI-only image; always pick DD mode.
+The UEFI ISOs can be flashed identically (`dd` / Rufus DD mode).
+Rufus's "ISO mode" tries to repackage the ISO and may break firmware
+boot files; always pick DD mode.
 
 ### Smoke-test the ISO and USB image under QEMU
 
 ```sh
-make run-iso       # boots target/hyperion.iso under QEMU + AAVMF
-make run-usb       # boots target/hyperion-usb.img under QEMU + AAVMF
+make run-iso                 # boots target/hyperion-aarch64-uefi.iso under QEMU + AAVMF
+make ARCH=x86_64 run-bios    # boots target/hyperion-x86_64-bios.iso under SeaBIOS
+make ARCH=x86_64 run-uefi    # boots target/hyperion-x86_64-uefi.iso under OVMF
+make run-usb                 # boots target/hyperion-usb.img under QEMU + AAVMF
 ```
 
 Expected output on either target:

@@ -10,6 +10,7 @@ pub mod caps;
 pub mod port;
 
 pub use caps::{CapTable, Capability, Handle, Rights};
+pub use port::{create as create_port, get as get_port, list as list_ports, lookup as lookup_port};
 pub use port::{Message, Port, PortError};
 
 /// One-time IPC subsystem init.
