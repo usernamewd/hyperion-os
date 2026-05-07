@@ -7,10 +7,11 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
 
 jobs:
   build:
-    name: build + clippy + fmt + artifacts
+    name: build + clippy + fmt
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
@@ -19,15 +20,7 @@ jobs:
         run: |
           rustup show
           rustup target add aarch64-unknown-none
-          rustup target add aarch64-unknown-uefi
-          rustup target add x86_64-unknown-none
-          rustup target add x86_64-unknown-uefi
           rustup component add clippy rustfmt
-
-      - name: Install ISO tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y grub-pc-bin grub-efi-amd64-bin grub-common xorriso mtools dosfstools gdisk
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -39,36 +32,22 @@ jobs:
           key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
 
       - name: rustfmt
-        run: make fmt-check
+        run: cargo fmt --all -- --check
 
-      - name: clippy (all)
-        run: make clippy-all
+      - name: clippy (libos-api)
+        run: cargo clippy -p hyperion-os-api --all-features -- -D warnings
 
-      - name: build kernels
-        run: make build-all
+      - name: clippy (kernel, aarch64)
+        run: cargo clippy -p hyperion-kernel --target aarch64-unknown-none --release -- -D warnings
 
-      - name: build production ISOs
-        run: |
-          make ARCH=aarch64 iso-uefi
-          make ARCH=x86_64 iso-bios
-          make ARCH=x86_64 iso-uefi
+      - name: build (kernel, aarch64)
+        run: cargo build -p hyperion-kernel --target aarch64-unknown-none --release
 
-      - name: Upload kernel binaries
+      - name: Upload kernel artifact
         uses: actions/upload-artifact@v4
         with:
-          name: hyperion-kernels
-          path: |
-            target/aarch64-unknown-none/release/hyperion-kernel
-            target/x86_64-unknown-none/release/hyperion-kernel
-
-      - name: Upload production ISOs
-        uses: actions/upload-artifact@v4
-        with:
-          name: hyperion-production-isos
-          path: |
-            target/hyperion-aarch64-uefi.iso
-            target/hyperion-x86_64-bios.iso
-            target/hyperion-x86_64-uefi.iso
+          name: hyperion-kernel
+          path: target/aarch64-unknown-none/release/hyperion-kernel
 
   smoke:
     name: QEMU smoke test
