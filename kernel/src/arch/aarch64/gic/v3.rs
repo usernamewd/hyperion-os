@@ -156,7 +156,7 @@ pub fn enable_ppi(intid: u32) {
 pub fn ack() -> u32 {
     // SAFETY: privileged sysreg read, safe at EL1.
     let v = unsafe { read_icc_iar1_el1() };
-    (v & 0xffff_ff) as u32
+    (v & 0x00ff_ffff) as u32
 }
 
 /// Signal end-of-interrupt for INTID `intid`.

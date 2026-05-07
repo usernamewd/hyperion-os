@@ -20,11 +20,39 @@ to EL0 as user services later.
 ├──────────────────────────────────────────────────────────────────────┤
 │  Platform drivers       UART · GIC · timer · PSCI · MMU               │
 ├──────────────────────────────────────────────────────────────────────┤
-│  aarch64 / QEMU virt                                                  │
+│  HAL                    BootInfo · DTB parser · Console trait         │
+├──────────────────────────────────────────────────────────────────────┤
+│  aarch64                QEMU virt · Pi 4/5 (UEFI) · Ampere · NXP …    │
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
+## HAL: the portability seam
+
+`kernel/src/hal/` is the boundary between the platform and everything
+else. It exposes:
+
+- `BootInfo` (`hal::boot_info`) — frozen, read-only struct describing
+  the running platform (console, GIC, timer, RAM map, optional
+  firmware framebuffer, optional DTB pointer).
+- `dtb::parse_or_fallback(addr)` — minimal Flattened Device Tree (FDT
+  v17) parser that walks `/memory`, `/chosen`, `/intc`, `/timer`, the
+  selected UART node and any `simple-framebuffer` chosen node. Falls
+  back to `BootInfo::qemu_virt_fallback()` when no DTB is provided.
+- `console::BootConsole` — sum type over the supported UART drivers
+  (`Pl011`, `Ns16550`, `BcmMiniUart`). Picked by the DTB parser based
+  on the UART's `compatible` string.
+
+Adding a new board reduces to teaching the DTB parser to recognise its
+`compatible` strings, or — for non-DT firmware — populating
+`BootInfo` directly and calling `hal::init`. See
+[`PORTING.md`](./PORTING.md).
+
 ## Boot flow
+
+There are three supported entry paths; all of them converge on the
+same `kmain` after `hal::init(BootInfo)` has been called.
+
+### Path A — direct `-kernel` (QEMU shortcut)
 
 1. **`_start`** (asm in `kernel/src/arch/aarch64/boot.rs`)
    - Saves the device-tree pointer (`x0` → `x19`).
@@ -38,23 +66,62 @@ to EL0 as user services later.
    - Zeroes BSS (`__bss_start..__bss_end`).
    - Installs the early exception vector (`__early_vectors`) into
      `vbar_el1`.
-   - Calls `hyperion_kernel_uart_early_init()`, then
-     `hyperion_kernel_kmain_trampoline(dtb)`.
+   - Calls `hyperion_kernel_kmain_trampoline(dtb)`.
 
-2. **`kmain`** (Rust entry, `kernel/src/lib.rs`)
+2. **`kmain_trampoline`** (Rust)
+   - Calls `hal::dtb::parse_or_fallback(dtb)` → `BootInfo`. If `dtb` is
+     null or unparseable, returns the QEMU virt defaults.
+   - `hal::init(bi)`.
+   - Brings up the boot console driver picked by `hal`.
+   - Tail-calls `kmain()`.
+
+3. **`kmain`** (`kernel/src/lib.rs`)
    - Prints the boot banner.
-   - Initialises the PMM (256 MiB managed) and the kernel heap (4 MiB).
-   - Installs the real exception vectors, enables the GIC and the
-     virtual generic timer at ~100 Hz.
-   - Initialises the scheduler, IPC, FS, display.
+   - Initialises the PMM from `hal::info().memory` and the kernel heap.
+   - Installs the real exception vectors; brings up the GIC (v2 or v3
+     depending on `hal::info().gic.version`) and the virtual generic
+     timer at ~100 Hz.
+   - `display::init()` — registers monitor #0. If
+     `hal::info().framebuffer` is `Some`, it is wrapped as an
+     `Mmio`-backed `Framebuffer` and registered as a *physical*
+     monitor; otherwise a `1280x720` virtual heap-backed monitor is
+     used.
+   - Initialises scheduler, IPC, FS.
    - Spawns the shell thread and enters `proc::scheduler::run()`.
+
+### Path B — DTB-described firmware boot
+
+Same as Path A, but the bootloader (U-Boot, custom loader, …) loads
+the kernel ELF and jumps to `_start` with `x0` = DTB physical address.
+The DTB parser populates `BootInfo` from the live device tree, so
+console / GIC / timer / RAM / firmware-framebuffer addresses come from
+firmware rather than QEMU defaults.
+
+### Path C — UEFI
+
+1. The firmware loads `efi-stub/` (`hyperion-efi-stub.efi`) as a normal
+   EFI application from `\EFI\BOOT\BOOTAA64.EFI`.
+2. The stub uses Boot Services to discover hardware:
+   - `LocateProtocol(EFI_GRAPHICS_OUTPUT_PROTOCOL)` → framebuffer
+     base, size, resolution, stride, pixel format.
+   - (Future: `GetMemoryMap` → RAM regions; `ConfigurationTable` →
+     ACPI / DTB pointer.)
+3. The stub paints a recognisable test pattern into the framebuffer to
+   prove the path end-to-end (`make run-efi`), then halts.
+4. The next iteration will: build a `BootInfo` from the GOP +
+   memory-map data, call `ExitBootServices`, load the kernel ELF into
+   RAM, and jump to its `_start` with the populated `BootInfo`
+   pre-installed.
 
 ## Memory layout
 
+The fixed-address regions below describe the **QEMU virt** path; on
+real boards the same regions live wherever `BootInfo` says they live.
+
 ```
-0x0900_0000        PL011 UART (MMIO)
-0x0800_0000..      GIC distributor
-0x0801_0000..      GIC CPU interface
+0x0900_0000        PL011 UART (MMIO)            (QEMU virt default)
+0x0800_0000..      GIC distributor               (QEMU virt default)
+0x0801_0000..      GIC v2 CPU interface          (QEMU virt default)
 
 0x4008_0000        kernel ELF load address (.text)
 0x4009_x000        .rodata
@@ -66,6 +133,39 @@ to EL0 as user services later.
 Kernel currently runs **identity-mapped with the MMU off**. Page tables
 exist (`kernel/src/arch/aarch64/mmu.rs`, two-level 2 MiB block map covering
 the first 1 GiB) but `enable()` is gated and only used by future EL0 work.
+
+## Drivers
+
+### UART
+
+`kernel/src/drivers/uart/` exposes a `Console` trait and three drivers
+selected at boot via the DTB:
+
+- `pl011` — ARM PrimeCell PL011. QEMU virt, NXP i.MX, most server-class
+  SoCs.
+- `ns16550` — 8250/16550-compatible. Configurable register stride
+  (`ns16550-stride`) covers Allwinner H6, NXP Layerscape, Marvell
+  Armada, Rockchip, and most U-Boot-driven boards.
+- `bcm_mini` — Broadcom BCM2835/BCM2837 mini-UART (Pi 3+ in
+  baremetal mode).
+
+The selected driver is wrapped in `BootConsole` and stored in a
+`Mutex<Option<BootConsole>>` so `print!` / `println!` macros work from
+anywhere.
+
+### Interrupt controller
+
+`kernel/src/arch/aarch64/gic/`:
+
+- `v2` — memory-mapped distributor + CPU interface (QEMU virt, Cortex-
+  A53/A72 reference platforms).
+- `v3` — memory-mapped distributor + system-register CPU interface
+  (`ICC_SRE_EL1`, `ICC_PMR_EL1`, `ICC_IGRPEN1_EL1`, `ICC_IAR1_EL1`,
+  `ICC_EOIR1_EL1`). Found on Ampere, Cavium ThunderX, NXP LX2160,
+  most modern server boards.
+
+`gic::init` / `enable_ppi` / `handle_irq` dispatch on
+`hal::info().gic.version`.
 
 ## Memory management
 
@@ -110,8 +210,14 @@ the first 1 GiB) but `enable()` is gated and only used by future EL0 work.
 ## Display
 
 - `Framebuffer` (`kernel/src/display/framebuffer.rs`) — RGBA8 / BGRA8,
-  heap-backed `Vec<u8>`, with `clear`, `put_pixel`, `fill_rect`,
-  `stroke_rect`, `encode_rgba`.
+  with **two backings**:
+  - `Heap(Vec<u8>)` — owned heap pixels, used for virtual monitors.
+  - `Mmio { base, len }` — raw MMIO pointer to firmware-provided
+    framebuffer memory (UEFI GOP, simple-framebuffer, etc.).
+
+  Both backings expose the same `pixels()` / `pixels_mut()` accessors,
+  so all the drawing primitives (`clear`, `put_pixel`, `fill_rect`,
+  `stroke_rect`) work transparently against either backing.
 - `Monitor` (`kernel/src/display/monitor.rs`) — wraps a `Framebuffer`
   and tags it `Physical` or `Virtual`. `register_monitor` returns a
   monotonically allocated `MonitorId`.
@@ -119,7 +225,13 @@ the first 1 GiB) but `enable()` is gated and only used by future EL0 work.
   layers; `render()` walks layers low-z first and alpha-blends each into
   the destination. Used by the `demo` shell command.
 
-A virtual `1280x720` monitor is registered at boot (`display::init()`).
+`display::init()` checks `hal::info().framebuffer`:
+
+- If a firmware framebuffer is reported (UEFI GOP / `simple-framebuffer`
+  DT node), it wraps the MMIO range with `Framebuffer::from_mmio` and
+  registers it as **physical** monitor `fb0`.
+- Otherwise it registers a `1280x720` heap-backed **virtual** monitor
+  (`monitor0`) so the rest of the system has somewhere to draw.
 
 ## UI building blocks
 

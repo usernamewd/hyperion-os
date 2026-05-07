@@ -284,9 +284,9 @@ fn print_u32(con_out: *mut EfiSimpleTextOutputProtocol, mut n: u32) {
 fn print_u64_hex(con_out: *mut EfiSimpleTextOutputProtocol, n: u64) {
     print(con_out, "0x");
     let mut buf = [0u8; 16];
-    for i in 0..16 {
+    for (i, slot) in buf.iter_mut().enumerate() {
         let nyb = ((n >> ((15 - i) * 4)) & 0xf) as u8;
-        buf[i] = if nyb < 10 { b'0' + nyb } else { b'a' + (nyb - 10) };
+        *slot = if nyb < 10 { b'0' + nyb } else { b'a' + (nyb - 10) };
     }
     let s = core::str::from_utf8(&buf).unwrap_or("?");
     print(con_out, s);
@@ -317,9 +317,9 @@ fn paint_pattern(mode: *mut EfiGraphicsOutputProtocolMode) {
     // Encode rgba -> 32-bit pixel for the active GOP format.
     let encode = |r: u8, g: u8, b: u8| -> u32 {
         if bgrx {
-            ((b as u32) << 0) | ((g as u32) << 8) | ((r as u32) << 16) | (0xff << 24)
+            (b as u32) | ((g as u32) << 8) | ((r as u32) << 16) | (0xff << 24)
         } else {
-            ((r as u32) << 0) | ((g as u32) << 8) | ((b as u32) << 16) | (0xff << 24)
+            (r as u32) | ((g as u32) << 8) | ((b as u32) << 16) | (0xff << 24)
         }
     };
     // Hyperion stripes: dark navy / cyan / magenta.
