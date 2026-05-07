@@ -431,7 +431,11 @@ fn act_on_node(
             // Replace the fallback's first push the *first* time we see a
             // real memory node, to avoid keeping the QEMU-virt 256 MiB
             // default that lives in the fallback.
-            if info.dtb_addr != 0 && info.memory.as_slice().len() == 1 && info.memory.as_slice()[0].base == 0x4000_0000 && info.memory.as_slice()[0].size == 256 * 1024 * 1024 {
+            if info.dtb_addr != 0
+                && info.memory.as_slice().len() == 1
+                && info.memory.as_slice()[0].base == 0x4000_0000
+                && info.memory.as_slice()[0].size == 256 * 1024 * 1024
+            {
                 info.memory = MemoryMap::empty();
             }
             info.memory.push(MemoryRegion::new(base, size));
@@ -506,8 +510,7 @@ fn act_on_node(
     }
 
     // simple-framebuffer or `/chosen/framebuffer`
-    if (compatible == "simple-framebuffer"
-        || (ctx.in_chosen && name.starts_with("framebuffer")))
+    if (compatible == "simple-framebuffer" || (ctx.in_chosen && name.starts_with("framebuffer")))
         && fb.is_some()
     {
         if let (Some(mut fb), Some((base, _))) = (fb, reg) {

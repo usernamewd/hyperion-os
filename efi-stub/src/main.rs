@@ -94,11 +94,11 @@ struct EfiBootServices {
     allocate_pages: *const c_void,
     free_pages: *const c_void,
     get_memory_map: extern "efiapi" fn(
-        *mut usize,           // mmap_size in/out
-        *mut c_void,          // mmap buffer
-        *mut usize,           // map_key out
-        *mut usize,           // descriptor_size out
-        *mut u32,             // descriptor_version out
+        *mut usize,  // mmap_size in/out
+        *mut c_void, // mmap buffer
+        *mut usize,  // map_key out
+        *mut usize,  // descriptor_size out
+        *mut u32,    // descriptor_version out
     ) -> EFI_STATUS,
     allocate_pool: *const c_void,
     free_pool: *const c_void,
@@ -286,7 +286,11 @@ fn print_u64_hex(con_out: *mut EfiSimpleTextOutputProtocol, n: u64) {
     let mut buf = [0u8; 16];
     for (i, slot) in buf.iter_mut().enumerate() {
         let nyb = ((n >> ((15 - i) * 4)) & 0xf) as u8;
-        *slot = if nyb < 10 { b'0' + nyb } else { b'a' + (nyb - 10) };
+        *slot = if nyb < 10 {
+            b'0' + nyb
+        } else {
+            b'a' + (nyb - 10)
+        };
     }
     let s = core::str::from_utf8(&buf).unwrap_or("?");
     print(con_out, s);

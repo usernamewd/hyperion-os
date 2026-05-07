@@ -69,9 +69,7 @@ pub fn init() {
     } else {
         let m = Monitor::new_virtual("monitor0", 1280, 720);
         register_monitor(m);
-        crate::log::info!(
-            "display: no firmware framebuffer; using virtual 1280x720 monitor"
-        );
+        crate::log::info!("display: no firmware framebuffer; using virtual 1280x720 monitor");
     }
 }
 

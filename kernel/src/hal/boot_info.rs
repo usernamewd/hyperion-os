@@ -219,7 +219,10 @@ impl fmt::Debug for BootInfo {
         f.debug_struct("BootInfo")
             .field("console", &(self.console.kind, self.console.regs))
             .field("memory", &self.memory)
-            .field("gic", &(self.gic.version, self.gic.dist, self.gic.cpu_or_redist))
+            .field(
+                "gic",
+                &(self.gic.version, self.gic.dist, self.gic.cpu_or_redist),
+            )
             .field("timer_freq_hz", &self.timer_freq_hz)
             .field("framebuffer", &self.framebuffer)
             .field("dtb_addr", &format_args!("{:#x}", self.dtb_addr))

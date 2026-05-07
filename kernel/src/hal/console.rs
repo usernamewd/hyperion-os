@@ -10,9 +10,7 @@
 //! kernel's TCB stays smaller without a heap dependency in the boot
 //! console. Instead, we store concrete driver instances in an enum.
 
-use crate::drivers::uart::{
-    bcm_mini::BcmMiniUart, ns16550::Ns16550, pl011::Pl011, Console,
-};
+use crate::drivers::uart::{bcm_mini::BcmMiniUart, ns16550::Ns16550, pl011::Pl011, Console};
 use crate::sync::Mutex;
 
 use super::boot_info::ConsoleSpec;

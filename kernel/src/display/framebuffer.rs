@@ -107,9 +107,7 @@ impl Framebuffer {
             FbBacking::Heap(v) => v.as_slice(),
             // SAFETY: invariant on FbBacking::Mmio guarantees `base..base+len`
             // is valid; the slice's lifetime is bounded by `&self`.
-            FbBacking::Mmio { base, len } => unsafe {
-                core::slice::from_raw_parts(*base, *len)
-            },
+            FbBacking::Mmio { base, len } => unsafe { core::slice::from_raw_parts(*base, *len) },
         }
     }
 

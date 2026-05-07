@@ -23,11 +23,17 @@ pub fn init() {
         // SAFETY: register windows are valid identity-mapped MMIO and
         // we are the only CPU running.
         GicVersion::V2 => unsafe {
-            v2::init(bi.gic.dist.base as usize, bi.gic.cpu_or_redist.base as usize);
+            v2::init(
+                bi.gic.dist.base as usize,
+                bi.gic.cpu_or_redist.base as usize,
+            );
         },
         // SAFETY: as above.
         GicVersion::V3 => unsafe {
-            v3::init(bi.gic.dist.base as usize, bi.gic.cpu_or_redist.base as usize);
+            v3::init(
+                bi.gic.dist.base as usize,
+                bi.gic.cpu_or_redist.base as usize,
+            );
         },
     }
 }

@@ -147,7 +147,7 @@ pub unsafe fn init(gicd: usize, gicr: usize) {
 pub fn enable_ppi(intid: u32) {
     let s = STATE.lock();
     let bit = intid % 32; // PPIs/SGIs all live in ISENABLER0
-    // SAFETY: rd mapped during init.
+                          // SAFETY: rd mapped during init.
     unsafe { w32(s.gicr + GICR_SGI_OFF + GICR_ISENABLER0, 1u32 << bit) };
 }
 
