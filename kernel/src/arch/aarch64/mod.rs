@@ -21,7 +21,6 @@ pub mod gic;
 pub mod mmu;
 pub mod psci;
 pub mod timer;
-pub mod uart;
 
 /// Late architecture initialisation, called from [`crate::kmain`] after the
 /// memory subsystem is ready.

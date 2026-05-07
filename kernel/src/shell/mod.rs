@@ -1,7 +1,8 @@
 //! Built-in interactive shell.
 //!
-//! Runs as a kernel thread reading from PL011 UART and writing to the
-//! same. It demonstrates how a userland "init" would interact with the
+//! Runs as a kernel thread reading from the active boot console (the
+//! UART selected by the HAL at boot time) and writing back to it.
+//! Demonstrates how a userland "init" would interact with the
 //! microkernel APIs — every command here is implemented in terms of the
 //! same public types exposed via [`crate::api`].
 
@@ -10,7 +11,7 @@ mod commands;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use crate::arch::aarch64::uart;
+use crate::hal::console as uart;
 use crate::kprintln;
 
 /// Spawn the shell thread.

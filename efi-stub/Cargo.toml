@@ -1,0 +1,21 @@
+[package]
+name = "hyperion-efi-stub"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "UEFI boot stub for Hyperion OS — discovers GOP framebuffer + memory map, exits boot services, hands off to the kernel."
+
+[[bin]]
+name = "hyperion-efi-stub"
+path = "src/main.rs"
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "warn"
+
+[lints.clippy]
+missing_safety_doc = "allow"
+new_without_default = "allow"
+needless_return = "allow"
+upper_case_acronyms = "allow"
