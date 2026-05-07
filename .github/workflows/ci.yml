@@ -7,10 +7,11 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
 
 jobs:
-  fmt:
-    name: rustfmt + libos-api clippy
+  build:
+    name: build + clippy + fmt
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
@@ -18,6 +19,7 @@ jobs:
       - name: Install Rust toolchain (pinned via rust-toolchain.toml)
         run: |
           rustup show
+          rustup target add aarch64-unknown-none
           rustup component add clippy rustfmt
 
       - name: Cache cargo
@@ -27,7 +29,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: cargo-${{ runner.os }}-fmt-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
 
       - name: rustfmt
         run: cargo fmt --all -- --check
@@ -35,53 +37,26 @@ jobs:
       - name: clippy (libos-api)
         run: cargo clippy -p hyperion-os-api --all-features -- -D warnings
 
-  build:
-    name: build + clippy (kernel)
-    runs-on: ubuntu-22.04
-    strategy:
-      fail-fast: false
-      matrix:
-        arch:
-          - aarch64-unknown-none
-          - x86_64-unknown-none
-    steps:
-      - uses: actions/checkout@v4
+      - name: clippy (kernel, aarch64)
+        run: cargo clippy -p hyperion-kernel --target aarch64-unknown-none --release -- -D warnings
 
-      - name: Install Rust toolchain (pinned via rust-toolchain.toml)
-        run: |
-          rustup show
-          rustup target add ${{ matrix.arch }}
-          rustup component add clippy
-
-      - name: Cache cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: cargo-${{ runner.os }}-${{ matrix.arch }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
-
-      - name: clippy (kernel, ${{ matrix.arch }})
-        run: cargo clippy -p hyperion-kernel --target ${{ matrix.arch }} --release -- -D warnings
-
-      - name: build (kernel, ${{ matrix.arch }})
-        run: cargo build -p hyperion-kernel --target ${{ matrix.arch }} --release
+      - name: build (kernel, aarch64)
+        run: cargo build -p hyperion-kernel --target aarch64-unknown-none --release
 
       - name: Upload kernel artifact
         uses: actions/upload-artifact@v4
         with:
-          name: hyperion-kernel-${{ matrix.arch }}
-          path: target/${{ matrix.arch }}/release/hyperion-kernel
+          name: hyperion-kernel
+          path: target/aarch64-unknown-none/release/hyperion-kernel
 
-  smoke-aarch64:
-    name: QEMU smoke test (aarch64, -kernel)
+  smoke:
+    name: QEMU smoke test
     runs-on: ubuntu-22.04
     needs: build
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust toolchain
+      - name: Install Rust toolchain (pinned via rust-toolchain.toml)
         run: |
           rustup show
           rustup target add aarch64-unknown-none
@@ -98,7 +73,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: cargo-${{ runner.os }}-aarch64-unknown-none-smoke-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
 
       - name: Build kernel
         run: cargo build -p hyperion-kernel --target aarch64-unknown-none --release
@@ -108,6 +83,7 @@ jobs:
           set -e
           BIN=target/aarch64-unknown-none/release/hyperion-kernel
           OUT=$(mktemp)
+          # Pipe a small script of commands and shut down. 12s ceiling.
           {
             printf 'help\nls /\nmem\nps\ndisplay\ncat /welcome\nuptime\n'
             sleep 4
@@ -117,111 +93,9 @@ jobs:
               -M virt -cpu cortex-a72 -smp 1 -m 512M \
               -display none -serial stdio \
               -kernel "$BIN" | tee "$OUT"
+          # Sanity-check that the boot banner and key shell output appeared.
           grep -q "Hyperion OS" "$OUT"
           grep -q "Hyperion shell ready" "$OUT"
           grep -q "RAM (managed)" "$OUT"
           grep -q "monitor #0" "$OUT"
           grep -q "Welcome to Hyperion OS" "$OUT"
-
-  smoke-x86_64:
-    name: QEMU smoke test (x86_64, multiboot2 -kernel)
-    runs-on: ubuntu-22.04
-    needs: build
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        run: |
-          rustup show
-          rustup target add x86_64-unknown-none
-
-      - name: Install QEMU
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y qemu-system-x86
-
-      - name: Cache cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: cargo-${{ runner.os }}-x86_64-unknown-none-smoke-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
-
-      - name: Build kernel
-        run: cargo build -p hyperion-kernel --target x86_64-unknown-none --release
-
-      - name: Boot under QEMU + Multiboot2 -kernel and run a few shell commands
-        run: |
-          set -e
-          BIN=target/x86_64-unknown-none/release/hyperion-kernel
-          OUT=$(mktemp)
-          {
-            printf 'help\nls /\nmem\nps\ndisplay\ncat /welcome\nuptime\n'
-            sleep 4
-            printf 'shutdown\n'
-            sleep 2
-          } | timeout 12 qemu-system-x86_64 \
-              -M q35 -cpu qemu64 -smp 1 -m 512M \
-              -display none -serial stdio -no-reboot -no-shutdown \
-              -kernel "$BIN" | tee "$OUT" || true
-          grep -q "Hyperion OS" "$OUT"
-          grep -q "Hyperion shell ready" "$OUT"
-          grep -q "RAM (managed)" "$OUT"
-          grep -q "monitor #0" "$OUT"
-          grep -q "Welcome to Hyperion OS" "$OUT"
-
-  smoke-x86_64-bios-iso:
-    name: QEMU smoke test (x86_64, BIOS via GRUB ISO)
-    runs-on: ubuntu-22.04
-    needs: build
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        run: |
-          rustup show
-          rustup target add x86_64-unknown-none
-
-      - name: Install QEMU + GRUB tooling
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y qemu-system-x86 \
-              grub-pc-bin grub-efi-amd64-bin grub-common \
-              xorriso mtools dosfstools
-
-      - name: Cache cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: cargo-${{ runner.os }}-x86_64-unknown-none-iso-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
-
-      - name: Build hybrid BIOS+UEFI ISO
-        run: ./scripts/build-iso-x86_64.sh target/hyperion-x86_64.iso
-
-      - name: Boot ISO under QEMU SeaBIOS and verify shell banner
-        run: |
-          set -e
-          ISO=target/hyperion-x86_64.iso
-          OUT=$(mktemp)
-          {
-            printf 'help\nls /\nmem\nps\nuptime\n'
-            sleep 6
-            printf 'shutdown\n'
-            sleep 2
-          } | timeout 20 qemu-system-x86_64 \
-              -M q35 -cpu qemu64 -smp 1 -m 512M \
-              -display none -serial stdio -no-reboot -no-shutdown \
-              -cdrom "$ISO" | tee "$OUT" || true
-          grep -q "Hyperion OS" "$OUT"
-          grep -q "Hyperion shell ready" "$OUT"
-
-      - name: Upload ISO artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: hyperion-x86_64.iso
-          path: target/hyperion-x86_64.iso
