@@ -1,16 +1,25 @@
 //! aarch64 boot stub.
 //!
 //! `_start` is pinned by the linker into `.text.boot` and is the first thing
-//! that executes when QEMU loads our kernel. We do the minimum amount of
-//! work needed before transferring to Rust:
+//! that executes when the kernel is loaded — be that QEMU `-kernel`,
+//! U-Boot, the EFI stub, or a future Pi mailbox loader. We do the
+//! minimum amount of work needed before transferring to Rust:
 //!
-//! * Park secondary CPUs (we boot single-core; multi-core is a follow-up).
-//! * Switch to EL1 if we entered at EL2 (QEMU `virt` boots us at EL2 by
-//!   default unless `-cpu host` is used in nested-virt configurations).
-//! * Set up SP, zero BSS, and call [`crate::kmain`].
+//! * Park secondary CPUs (we boot single-core; SMP is a follow-up).
+//! * Drop to EL1 if we entered at EL2 (QEMU `virt` does, U-Boot's
+//!   default does, most boot firmware does).
+//! * Set up SP, zero BSS, install a tiny early exception vector (so
+//!   accidental traps before `late_init` halt cleanly), and call into
+//!   the Rust trampoline.
 //!
-//! The early UART is set up synchronously by [`super::uart::init`], called
-//! before [`crate::kmain`] so the very first banner print works.
+//! The trampoline parses the device-tree blob handed in `x0` (when
+//! present) and instantiates the HAL — including the active console
+//! UART — before [`crate::kmain`] runs. So the very first `log!` line
+//! is already emitted via the right driver for the board we're on.
+//!
+//! The Linux aarch64 boot protocol image header lives at offset 0 so
+//! the same kernel can be loaded as a flat binary by firmware that
+//! requires it (U-Boot's `booti`, ARM's `kernel8.img`, etc.).
 
 use core::arch::global_asm;
 
@@ -98,10 +107,9 @@ _start:
     msr     vbar_el1, x0
     isb
 
-    // Initialise the early UART so kmain's first log line lands somewhere.
-    bl      hyperion_kernel_uart_early_init
-
-    // Restore DTB pointer and tail-call into Rust.
+    // Restore DTB pointer (saved in x19 above) and tail-call into Rust.
+    // The trampoline parses the DTB, brings up the HAL (including the
+    // console UART), then jumps into kmain.
     mov     x0, x19
     bl      hyperion_kernel_kmain_trampoline
 
@@ -124,15 +132,19 @@ __early_vectors:
 
 /// Trampoline called from `_start`. Exists so that `_start` can be raw
 /// assembly without referencing Rust-mangled names directly.
+///
+/// `dtb` is the physical address of the device-tree blob (when one
+/// exists); 0 means "no DTB", in which case the HAL falls back to a
+/// compile-time QEMU-virt machine description so the legacy
+/// `qemu-system-aarch64 -kernel hyperion-kernel` path keeps working.
 #[no_mangle]
-pub extern "C" fn hyperion_kernel_kmain_trampoline(_dtb: u64) -> ! {
+pub extern "C" fn hyperion_kernel_kmain_trampoline(dtb: u64) -> ! {
+    // SAFETY: this runs exactly once, with interrupts masked and no
+    // other CPU awake. `dtb` is whatever firmware put in x0; the parser
+    // validates it before reading.
+    let bi = unsafe { crate::hal::dtb::parse_or_fallback(dtb) };
+    // SAFETY: `bi` describes mapped MMIO regions on this board; the
+    // HAL initialises the active console driver here.
+    unsafe { crate::hal::init(bi) };
     crate::kmain();
-}
-
-/// Called from `_start` before Rust runs. Brings up the PL011 UART so that
-/// any subsequent panic / log output makes it to the user's terminal.
-#[no_mangle]
-pub extern "C" fn hyperion_kernel_uart_early_init() {
-    // SAFETY: only called once, before any other CPU is awake.
-    unsafe { super::uart::init() };
 }

@@ -41,12 +41,12 @@ fn sys_exit(_code: i32) -> SyscallResult {
 }
 
 fn sys_putchar(b: u8) -> SyscallResult {
-    crate::arch::aarch64::uart::putb(b);
+    crate::hal::console::putb(b);
     0
 }
 
 fn sys_getchar() -> SyscallResult {
-    crate::arch::aarch64::uart::getb_blocking() as i64
+    crate::hal::console::getb_blocking() as i64
 }
 
 fn sys_uptime() -> SyscallResult {

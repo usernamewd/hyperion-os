@@ -1,9 +1,9 @@
 //! Kernel logging.
 //!
-//! A tiny [`log`]-compatible logger that pipes everything to the PL011
-//! UART, serialised by a spinlock. We expose the [`log`] macros via
-//! `pub use log::{info,warn,error,debug,trace}` so call sites read
-//! identically inside and outside the kernel crate.
+//! Tiny [`log`]-compatible logger that pipes everything to the active
+//! boot console (whichever UART the HAL picked at boot — PL011, 16550,
+//! BCM mini-UART, …). All writes are serialised by a spinlock so
+//! multi-line records stay uninterleaved.
 
 use core::fmt::Write;
 
@@ -11,11 +11,13 @@ use spin::Mutex;
 
 pub use log::{debug, error, info, trace, warn};
 
-use crate::arch::aarch64::uart::Uart;
+use crate::hal::console::Writer;
 
-/// Single global UART writer. We hold this for the duration of one log
-/// statement to keep multi-line records uninterleaved.
-static UART: Mutex<Uart> = Mutex::new(Uart);
+/// Lock around the console writer. The `Writer` is zero-sized; the
+/// actual console handle lives in `crate::hal::console`. We hold this
+/// for the duration of one log record so multi-line entries don't get
+/// interleaved with concurrent log calls.
+static WRITER: Mutex<Writer> = Mutex::new(Writer);
 
 struct KernelLogger;
 
@@ -25,8 +27,8 @@ impl ::log::Log for KernelLogger {
     }
 
     fn log(&self, record: &::log::Record) {
-        let mut uart = UART.lock();
-        let _ = writeln!(uart, "[{:>5}] {}", record.level(), record.args());
+        let mut w = WRITER.lock();
+        let _ = writeln!(w, "[{:>5}] {}", record.level(), record.args());
     }
 
     fn flush(&self) {}
@@ -40,17 +42,17 @@ pub fn init() {
     ::log::set_max_level(::log::LevelFilter::Info);
 }
 
-/// Print to the UART without going through the [`log`] facade. Useful from
-/// the panic handler where the logger lock might already be held.
+/// Print to the console without going through the [`log`] facade. Useful
+/// from the panic handler where the logger lock might already be held.
 pub fn raw_print(args: core::fmt::Arguments<'_>) {
-    // We deliberately use `try_lock` here so we don't deadlock if the
-    // panic happens while another CPU holds the logger.
-    if let Some(mut uart) = UART.try_lock() {
-        let _ = uart.write_fmt(args);
+    // `try_lock` so we don't deadlock if the panic happens while another
+    // CPU holds the logger.
+    if let Some(mut w) = WRITER.try_lock() {
+        let _ = w.write_fmt(args);
     } else {
         // Fallback: write directly, accepting that output may interleave.
-        let mut uart = Uart;
-        let _ = uart.write_fmt(args);
+        let mut w = Writer;
+        let _ = w.write_fmt(args);
     }
 }
 

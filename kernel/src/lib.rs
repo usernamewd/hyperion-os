@@ -49,7 +49,9 @@ extern crate alloc;
 
 pub mod arch;
 pub mod display;
+pub mod drivers;
 pub mod fs;
+pub mod hal;
 pub mod ipc;
 pub mod log;
 pub mod mm;
@@ -75,16 +77,33 @@ pub const BANNER: &str = concat!(
 
 /// Architecture-independent kernel entry point.
 ///
-/// Called from the architecture-specific boot path once a stack is set up,
-/// the BSS is zeroed, and the early UART is alive. Initialization order is
-/// significant; see comments inline.
+/// Called from the architecture-specific boot path once a stack is set
+/// up, BSS is zeroed, and the HAL has been brought up (which means the
+/// boot console is already alive — the boot stub parsed the device-tree
+/// blob and instantiated the right UART driver before jumping here).
+///
+/// Initialisation order matters; see inline comments.
 ///
 /// This function does not return.
 pub fn kmain() -> ! {
-    // 1. Early UART is already up (the boot stub printed "boot ok").
+    // 1. Early console is up via `hal::init` from the boot stub. Wire
+    //    the `log` facade so the rest of the kernel can use it.
     crate::log::init();
     log::info!("{}", BANNER);
     log::info!("kmain: entering kernel main");
+
+    // Echo the discovered hardware so the user can see what board the
+    // kernel believes it's running on. Useful when porting.
+    let bi = hal::info();
+    log::info!(
+        "hal: console={:?}@{:#x} gic={:?}@{:#x} dtb={:#x} ram_total={} MiB",
+        bi.console.kind,
+        bi.console.regs.base,
+        bi.gic.version,
+        bi.gic.dist.base,
+        bi.dtb_addr,
+        bi.memory.total_bytes() / (1024 * 1024)
+    );
 
     // 2. Memory: physical frame allocator first (so heap can request pages
     //    later if it wants to grow), then the kernel heap, then the MMU.
