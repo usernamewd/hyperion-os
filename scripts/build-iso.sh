@@ -2,17 +2,18 @@
 #
 # Build a hybrid ARM64 UEFI bootable ISO from the Hyperion EFI stub.
 #
-# The ISO is structured as a "no-emul" El Torito + GPT hybrid:
+# The ISO is a "no-emul" El Torito + appended-GPT hybrid:
 #
 #   - ISO9660 filesystem at the top level (so it mounts as a CD).
 #   - Embedded FAT image acting as the EFI System Partition (ESP),
 #     containing /EFI/BOOT/BOOTAA64.EFI (the UEFI fallback boot path
 #     for ARM64 — UEFI firmware looks for this exact path on any
 #     attached removable media).
-#   - GPT/MBR hybrid partition table from xorriso's
-#     `-isohybrid-gpt-basdat` so the ISO is also bootable when
-#     written byte-for-byte to a USB stick (Rufus DD mode, `dd`,
-#     balenaEtcher).
+#   - The same FAT image is also exposed via xorriso's
+#     `-append_partition 2 0xef ...`, which appends a real GPT
+#     partition pointing at the embedded ESP. UEFI ARM64 firmware
+#     can therefore find the ESP either through El Torito boot
+#     (CD path) or through plain GPT enumeration (USB / dd path).
 #
 # Usage:
 #   scripts/build-iso.sh [out.iso]
@@ -33,7 +34,7 @@ STAGE="target/iso-stage"
 ESP_IMG="target/iso-stage/EFI/efiboot.img"
 VOLID="HYPERION"
 
-for tool in xorriso mformat mmd mcopy mkfs.vfat cargo; do
+for tool in xorriso mmd mcopy mkfs.vfat cargo; do
     if ! command -v "$tool" >/dev/null 2>&1; then
         echo "build-iso: missing required tool: $tool" >&2
         exit 1

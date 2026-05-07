@@ -39,7 +39,7 @@ TAIL_SECTORS=2048           # leave room for GPT secondary
 DISK_SECTORS=$(( END_SECTOR + TAIL_SECTORS + 1 ))
 DISK_BYTES=$(( DISK_SECTORS * SECTOR ))
 
-for tool in sgdisk mformat mmd mcopy mkfs.vfat cargo; do
+for tool in sgdisk mmd mcopy mkfs.vfat cargo; do
     if ! command -v "$tool" >/dev/null 2>&1; then
         echo "build-usb-img: missing required tool: $tool" >&2
         exit 1
