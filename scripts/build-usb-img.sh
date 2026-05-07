@@ -20,6 +20,7 @@
 #
 # Requirements:
 #   sgdisk (gdisk pkg), mtools, dosfstools, cargo.
+#   The Hyperion kernel is embedded in BOOTAA64.EFI by the stub build.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -28,6 +29,8 @@ cd "$ROOT"
 OUT="${1:-target/hyperion-usb.img}"
 EFI_TARGET="aarch64-unknown-uefi"
 EFI_PROFILE="release"
+KERNEL_TARGET="aarch64-unknown-none"
+KERNEL_BIN="target/${KERNEL_TARGET}/${EFI_PROFILE}/hyperion-kernel"
 EFI_BIN="target/${EFI_TARGET}/${EFI_PROFILE}/hyperion-efi-stub.efi"
 STAGE_FAT="target/usb-stage/esp.img"
 SECTOR=512
@@ -46,8 +49,13 @@ for tool in sgdisk mmd mcopy mkfs.vfat cargo; do
     fi
 done
 
-echo "==> building EFI stub"
-cargo build -p hyperion-efi-stub --target "$EFI_TARGET" --release
+echo "==> building kernel payload"
+CARGO_PROFILE_RELEASE_DEBUG=false CARGO_PROFILE_RELEASE_STRIP=symbols \
+    cargo build -p hyperion-kernel --target "$KERNEL_TARGET" --release
+
+echo "==> building EFI stub with embedded kernel"
+HYPERION_KERNEL_ELF="$ROOT/$KERNEL_BIN" \
+    cargo build -p hyperion-efi-stub --target "$EFI_TARGET" --release
 
 if [[ ! -f "$EFI_BIN" ]]; then
     echo "build-usb-img: EFI stub not found at $EFI_BIN" >&2

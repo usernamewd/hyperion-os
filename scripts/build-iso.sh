@@ -20,7 +20,7 @@
 #
 # Requirements:
 #   xorriso, mtools (mformat, mmd, mcopy), dosfstools (mkfs.vfat).
-#   The Hyperion EFI stub is built first (cargo build).
+#   The Hyperion kernel is embedded in BOOTAA64.EFI by the stub build.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -29,6 +29,8 @@ cd "$ROOT"
 OUT="${1:-target/hyperion.iso}"
 EFI_TARGET="aarch64-unknown-uefi"
 EFI_PROFILE="release"
+KERNEL_TARGET="aarch64-unknown-none"
+KERNEL_BIN="target/${KERNEL_TARGET}/${EFI_PROFILE}/hyperion-kernel"
 EFI_BIN="target/${EFI_TARGET}/${EFI_PROFILE}/hyperion-efi-stub.efi"
 STAGE="target/iso-stage"
 ESP_IMG="target/iso-stage/EFI/efiboot.img"
@@ -41,8 +43,13 @@ for tool in xorriso mmd mcopy mkfs.vfat cargo; do
     fi
 done
 
-echo "==> building EFI stub"
-cargo build -p hyperion-efi-stub --target "$EFI_TARGET" --release
+echo "==> building kernel payload"
+CARGO_PROFILE_RELEASE_DEBUG=false CARGO_PROFILE_RELEASE_STRIP=symbols \
+    cargo build -p hyperion-kernel --target "$KERNEL_TARGET" --release
+
+echo "==> building EFI stub with embedded kernel"
+HYPERION_KERNEL_ELF="$ROOT/$KERNEL_BIN" \
+    cargo build -p hyperion-efi-stub --target "$EFI_TARGET" --release
 
 if [[ ! -f "$EFI_BIN" ]]; then
     echo "build-iso: EFI stub not found at $EFI_BIN" >&2
@@ -53,11 +60,11 @@ echo "==> staging ESP at $STAGE"
 rm -rf "$STAGE"
 mkdir -p "$(dirname "$ESP_IMG")"
 
-# 4 MiB FAT image is plenty for a single 50 KiB BOOTAA64.EFI; gives
-# headroom for a kernel + extras in later iterations.
-ESP_SIZE_KIB=4096
+# The EFI image embeds the stripped kernel ELF, so keep enough ESP
+# headroom for the PE/COFF image plus future metadata.
+ESP_SIZE_KIB=16384
 truncate -s "${ESP_SIZE_KIB}KiB" "$ESP_IMG"
-mkfs.vfat -F 12 -n "$VOLID" "$ESP_IMG" >/dev/null
+mkfs.vfat -F 16 -n "$VOLID" "$ESP_IMG" >/dev/null
 
 mmd -i "$ESP_IMG" ::EFI ::EFI/BOOT
 mcopy -i "$ESP_IMG" "$EFI_BIN" "::EFI/BOOT/BOOTAA64.EFI"
@@ -75,9 +82,9 @@ This is an ARM64 UEFI ISO. Boot it on:
   - From USB after writing with Rufus (DD mode), `dd`, or balenaEtcher
 
 The UEFI firmware loads /EFI/BOOT/BOOTAA64.EFI from the embedded
-EFI System Partition. That stub initialises the framebuffer via
-the EFI Graphics Output Protocol and paints a Hyperion test
-pattern. Kernel handover is wired up in a follow-up iteration.
+EFI System Partition. That stub initialises GOP, embeds and loads
+the Hyperion kernel ELF, exits boot services, and jumps into the
+kernel with a populated handoff block.
 EOF
 
 echo "==> building ARM64 UEFI ISO at $OUT"

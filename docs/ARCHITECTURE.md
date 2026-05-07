@@ -104,14 +104,13 @@ firmware rather than QEMU defaults.
 2. The stub uses Boot Services to discover hardware:
    - `LocateProtocol(EFI_GRAPHICS_OUTPUT_PROTOCOL)` → framebuffer
      base, size, resolution, stride, pixel format.
-   - (Future: `GetMemoryMap` → RAM regions; `ConfigurationTable` →
-     ACPI / DTB pointer.)
-3. The stub paints a recognisable test pattern into the framebuffer to
-   prove the path end-to-end (`make run-efi`), then halts.
-4. The next iteration will: build a `BootInfo` from the GOP +
-   memory-map data, call `ExitBootServices`, load the kernel ELF into
-   RAM, and jump to its `_start` with the populated `BootInfo`
-   pre-installed.
+   - `GetMemoryMap` → conventional RAM regions for the PMM.
+3. The stub loads the embedded kernel ELF into its fixed physical
+   segments, then paints a recognisable test pattern into the framebuffer
+   to prove GOP is writable (`make run-efi`).
+4. It builds a UEFI handoff block from GOP + memory-map data, calls
+   `ExitBootServices`, disables firmware MMU/cache state, and jumps to
+   the kernel `_start` with the handoff pointer in `x0`.
 
 ## Memory layout
 
@@ -173,8 +172,8 @@ anywhere.
   256 MiB region. Reports total / free in KiB to the `mem` shell command.
 - **Heap** (`kernel/src/mm/heap.rs`) — `linked_list_allocator::LockedHeap`
   global allocator over a 4 MiB region in `.heap`.
-- **VMM** (`kernel/src/mm/vmm.rs`) — placeholder address-space type;
-  becomes meaningful when EL0 lands.
+- **VMM** (`kernel/src/mm/vmm.rs`) — page-granular virtual address-space
+  mappings with overlap validation and physical translation helpers.
 
 ## Processes & scheduling
 

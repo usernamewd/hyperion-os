@@ -133,18 +133,29 @@ __early_vectors:
 /// Trampoline called from `_start`. Exists so that `_start` can be raw
 /// assembly without referencing Rust-mangled names directly.
 ///
-/// `dtb` is the physical address of the device-tree blob (when one
-/// exists); 0 means "no DTB", in which case the HAL falls back to a
+/// `boot_arg` is either the physical address of a device-tree blob or a
+/// pointer to the UEFI handoff block built by `efi-stub/`. Address `0`
+/// means "no firmware table", in which case the HAL falls back to a
 /// compile-time QEMU-virt machine description so the legacy
 /// `qemu-system-aarch64 -kernel hyperion-kernel` path keeps working.
 #[no_mangle]
-pub extern "C" fn hyperion_kernel_kmain_trampoline(dtb: u64) -> ! {
-    // SAFETY: this runs exactly once, with interrupts masked and no
-    // other CPU awake. `dtb` is whatever firmware put in x0; the parser
-    // validates it before reading.
-    let bi = unsafe { crate::hal::dtb::parse_or_fallback(dtb) };
+pub extern "C" fn hyperion_kernel_kmain_trampoline(boot_arg: u64) -> ! {
+    let bi = uefi_handoff(boot_arg).unwrap_or_else(|| {
+        // SAFETY: this runs exactly once, with interrupts masked and no
+        // other CPU awake. `boot_arg` is whatever firmware put in x0;
+        // the parser validates a DTB magic before reading further.
+        unsafe { crate::hal::dtb::parse_or_fallback(boot_arg) }
+    });
     // SAFETY: `bi` describes mapped MMIO regions on this board; the
     // HAL initialises the active console driver here.
     unsafe { crate::hal::init(bi) };
     crate::kmain();
+}
+
+fn uefi_handoff(addr: u64) -> Option<crate::hal::BootInfo> {
+    if addr == 0 {
+        return None;
+    }
+    let handoff = unsafe { (addr as *const crate::hal::boot_info::UefiHandoff).read_unaligned() };
+    handoff.to_boot_info()
 }
