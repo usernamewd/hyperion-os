@@ -132,6 +132,22 @@ _start:
     // want. The 32-bit stack lives at the top of __boot_stack_bottom.
     mov     esp, offset __boot_stack_top
 
+    // ---- Zero .bss ----
+    // The boot page tables and the boot stack live inside .bss, so we
+    // MUST zero it now while we're still in identity-mapped real mode.
+    // Doing it after enabling paging (the obvious place) wipes out the
+    // tables we're using to translate, causing an instant triple fault.
+    // EDI holds the multiboot2 info pointer; save/restore around the
+    // stos. ESI holds the magic and is preserved by stosd.
+    push    edi
+    lea     edi, [__bss_start]
+    lea     ecx, [__bss_end]
+    sub     ecx, edi
+    shr     ecx, 2
+    xor     eax, eax
+    rep     stosd
+    pop     edi
+
     // ---- Build identity page tables for the bottom 1 GiB ----
     //   PML4[0] -> PDPT
     //   PDPT[0] -> PD
@@ -139,12 +155,9 @@ _start:
     // Anything above 1 GiB (LAPIC at 0xFEE00000, framebuffers, etc.)
     // falls into the next 1 GiB and we map *that* whole gigabyte too,
     // through a second PDPT[3] entry, for free at boot.
-
-    // Zero the three tables (3 * 4096 / 4 dwords).
-    lea     edi, [__boot_pml4]
-    mov     ecx, (4096 * 3) / 4
-    xor     eax, eax
-    rep     stosd
+    //
+    // The three tables sit in .bss which we just zeroed, so we don't
+    // need a redundant clear here.
 
     // PML4[0] -> PDPT, present + writable
     lea     eax, [__boot_pdpt]
@@ -219,19 +232,12 @@ _start64:
     // Re-establish the 64-bit stack pointer (RSP).
     lea     rsp, [__boot_stack_top]
 
-    // Zero .bss (between __bss_start / __bss_end as the linker script
-    // defines them).
-    lea     rdi, [__bss_start]
-    lea     rcx, [__bss_end]
-    sub     rcx, rdi
-    shr     rcx, 3
-    xor     rax, rax
-    rep     stosq
-
+    // .bss was already zeroed in 32-bit mode (zeroing it here would
+    // wipe the still-active __boot_pml4/PDPT/PD that live in .bss).
+    //
     // Multiboot2 info pointer is in EDI/RDI from way earlier; magic is
     // in ESI/RSI. Pass them to the trampoline. RDI is already the MB2
     // info ptr; the magic goes in RSI (which is the second sysv arg).
-    // Convince the linker to keep the symbol live by referencing it.
     call    hyperion_kernel_kmain_trampoline
 
     // Trampoline shouldn't return; if it does, halt.

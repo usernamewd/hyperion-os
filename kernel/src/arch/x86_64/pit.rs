@@ -61,17 +61,25 @@ pub fn calibrate_tsc() -> u64 {
     delta * 1_000_000 / micros as u64
 }
 
-/// Calibrate the LAPIC bus tick rate (Hz). Programs the LAPIC timer
-/// with the maximum count, runs the PIT window, then reads the
-/// difference.
+/// Calibrate the LAPIC bus tick rate (Hz). We use the (already
+/// calibrated) TSC as the time base instead of the PIT — under UEFI
+/// firmware (OVMF) the PIT channel-2 gate at port 0x61 doesn't strobe
+/// reliably a second time, so a PIT-based window hangs forever in
+/// `measure`. The TSC has none of those problems and is also more
+/// accurate.
 pub fn calibrate_lapic() -> u64 {
-    let micros = 50_000;
-
     let bi = crate::hal::info();
     let base = bi.intc.primary.base as usize;
     if base == 0 {
         return 0;
     }
+
+    let tsc_freq = super::tsc::read_freq();
+    if tsc_freq == 0 {
+        return 0;
+    }
+    let calib_us: u64 = 50_000;
+    let tsc_ticks_to_wait = tsc_freq.saturating_mul(calib_us) / 1_000_000;
 
     // SAFETY: LAPIC is mapped.
     unsafe {
@@ -79,16 +87,22 @@ pub fn calibrate_lapic() -> u64 {
         core::ptr::write_volatile((base + 0x3E0) as *mut u32, 0b0011);
         // Mask the timer LVT during calibration (vector 0x20, masked).
         core::ptr::write_volatile((base + 0x320) as *mut u32, (1 << 16) | 0x20);
+        // Program one-shot countdown from u32::MAX.
+        core::ptr::write_volatile((base + 0x380) as *mut u32, u32::MAX);
 
-        let delta = measure(micros, || {
-            // Reset the counter to ~max and read it twice for the
-            // window. We read the *initial - current* delta so the
-            // closure-as-counter sees an increasing tick count.
-            core::ptr::write_volatile((base + 0x380) as *mut u32, u32::MAX);
-            let cur = core::ptr::read_volatile((base + 0x390) as *const u32) as u64;
-            u32::MAX as u64 - cur
-        });
+        let tsc_start = super::tsc::read();
+        let lapic_start =
+            u32::MAX as u64 - core::ptr::read_volatile((base + 0x390) as *const u32) as u64;
+        while super::tsc::read().wrapping_sub(tsc_start) < tsc_ticks_to_wait {
+            core::hint::spin_loop();
+        }
+        let lapic_end =
+            u32::MAX as u64 - core::ptr::read_volatile((base + 0x390) as *const u32) as u64;
 
-        delta * 1_000_000 / micros as u64
+        // Stop the LAPIC timer (initial count = 0 disables it).
+        core::ptr::write_volatile((base + 0x380) as *mut u32, 0);
+
+        let delta = lapic_end.wrapping_sub(lapic_start);
+        delta.saturating_mul(1_000_000) / calib_us
     }
 }
