@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
-# Build a hybrid ARM64 UEFI bootable ISO from the Hyperion EFI stub.
+# Build an ARM64 UEFI bootable ISO from the Hyperion EFI stub.
 #
-# The ISO is a "no-emul" El Torito + appended-GPT hybrid:
+# The ISO is a "no-emul" El Torito image with an appended GPT ESP:
 #
 #   - ISO9660 filesystem at the top level (so it mounts as a CD).
 #   - Embedded FAT image acting as the EFI System Partition (ESP),
@@ -69,7 +69,7 @@ cp "$EFI_BIN" "$STAGE/hyperion/BOOTAA64.EFI"
 cat > "$STAGE/README.TXT" <<'EOF'
 Hyperion OS bootable ISO.
 
-This is a hybrid ARM64 UEFI ISO. Boot it on:
+This is an ARM64 UEFI ISO. Boot it on:
   - QEMU virt + AAVMF UEFI firmware
   - Any UEFI ARM64 system (server, dev board with UEFI firmware)
   - From USB after writing with Rufus (DD mode), `dd`, or balenaEtcher
@@ -80,7 +80,7 @@ the EFI Graphics Output Protocol and paints a Hyperion test
 pattern. Kernel handover is wired up in a follow-up iteration.
 EOF
 
-echo "==> building hybrid ISO at $OUT"
+echo "==> building ARM64 UEFI ISO at $OUT"
 mkdir -p "$(dirname "$OUT")"
 xorriso -as mkisofs \
     -V "$VOLID" \

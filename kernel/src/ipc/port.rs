@@ -7,9 +7,10 @@
 //! All bookkeeping is protected by a `Mutex`; this single CPU's scheduler
 //! will yield while waiting, so contention isn't catastrophic.
 
-use alloc::collections::VecDeque;
+use alloc::collections::{BTreeMap, VecDeque};
 use alloc::string::String;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::sync::Mutex;
@@ -137,5 +138,62 @@ fn alloc_port_id() -> u64 {
     NEXT_PORT_ID.fetch_add(1, Ordering::Relaxed)
 }
 
-/// One-time IPC init. Currently a placeholder for future global tables.
-pub fn init() {}
+struct Registry {
+    by_id: BTreeMap<u64, Arc<Port>>,
+    by_name: BTreeMap<String, u64>,
+}
+
+impl Registry {
+    const fn new() -> Self {
+        Self {
+            by_id: BTreeMap::new(),
+            by_name: BTreeMap::new(),
+        }
+    }
+}
+
+static REGISTRY: Mutex<Registry> = Mutex::new(Registry::new());
+
+pub fn create(name: &str) -> Arc<Port> {
+    if let Some(port) = lookup(name) {
+        return port;
+    }
+
+    let port = Port::new(name);
+    register(port.clone());
+    port
+}
+
+pub fn register(port: Arc<Port>) -> bool {
+    let mut registry = REGISTRY.lock();
+    if registry.by_id.contains_key(&port.id) || registry.by_name.contains_key(&port.name) {
+        return false;
+    }
+    registry.by_name.insert(port.name.clone(), port.id);
+    registry.by_id.insert(port.id, port);
+    true
+}
+
+pub fn get(id: u64) -> Option<Arc<Port>> {
+    REGISTRY.lock().by_id.get(&id).cloned()
+}
+
+pub fn lookup(name: &str) -> Option<Arc<Port>> {
+    let registry = REGISTRY.lock();
+    let id = registry.by_name.get(name)?;
+    registry.by_id.get(id).cloned()
+}
+
+pub fn list() -> Vec<(u64, String, usize)> {
+    REGISTRY
+        .lock()
+        .by_id
+        .values()
+        .map(|port| (port.id, port.name.clone(), port.pending()))
+        .collect()
+}
+
+/// One-time IPC init.
+pub fn init() {
+    create("kernel");
+}
