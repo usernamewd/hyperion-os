@@ -1,31 +1,31 @@
 //! x86_64 boot stub.
 //!
-//! GRUB-PC (BIOS) and GRUB-EFI (UEFI) both honour the Multiboot2 spec
-//! and drop us at the entry point named in our Multiboot2 header in
-//! 32-bit protected mode. Our [`mb2`] header (also in this crate)
-//! advertises a 4 KiB-aligned load + a request for the framebuffer +
-//! the Multiboot2 EFI64 service. GRUB calls our entry with:
+//! Two entry paths land here:
 //!
-//! * `eax` = `0x36d76289` (multiboot2 magic).
-//! * `ebx` = physical address of the Multiboot2 information structure.
+//! * **Multiboot2** (GRUB-PC / GRUB-EFI / `qemu -kernel` once our
+//!   Multiboot2 header is recognised). GRUB enters in 32-bit protected
+//!   mode at the address advertised by the *entry address* tag in the
+//!   [.multiboot2_header](#) — we point it at [`_start`], which sets
+//!   up paging, switches to long mode, and tail-calls
+//!   [`hyperion_kernel_kmain_trampoline`] with `rdi` = the Multiboot2
+//!   info pointer.
+//! * **Native UEFI** (Hyperion's own EFI stub at `efi-stub/`, built
+//!   for `x86_64-unknown-uefi`). The stub stays in 64-bit long mode
+//!   the whole time, loads the kernel ELF, and jumps to the ELF's
+//!   `e_entry`. We pin `e_entry` at [`_start_uefi`] in
+//!   `linker-x86_64.ld`. `_start_uefi` switches to the kernel's own
+//!   stack, then tail-calls [`hyperion_kernel_uefi_trampoline`] with
+//!   `rdi` = a pointer to the [`UefiHandoff`](crate::hal::boot_info::UefiHandoff)
+//!   block the stub assembled.
 //!
-//! The stub:
+//! `_start` and `_start_uefi` cannot share machine code because they
+//! enter the CPU in different modes (32-bit protected vs 64-bit long).
+//! They share *everything else* — both end in a Rust trampoline that
+//! reaches `crate::kmain` via the same HAL bring-up sequence.
 //!
-//! 1. Verifies the magic.
-//! 2. Loads a flat 32-bit GDT and reloads the segment registers.
-//! 3. Builds a 4-level identity page table covering the lower 1 GiB
-//!    using a single 1 GiB PDPT entry (we only need it to bridge from
-//!    32-bit protected mode into 64-bit long mode; the kernel rebuilds
-//!    its real page tables in [`super::paging::init`] later).
-//! 4. Enables PAE + sets `EFER.LME` + sets `CR0.PG` to enter long
-//!    mode.
-//! 5. Reloads CS via a far jump into the 64-bit code segment, points
-//!    `RSP` at our stack reservation, and tail-calls
-//!    [`hyperion_kernel_kmain_trampoline`] with `rdi` = the Multiboot2
-//!    info pointer (extended to 64 bits).
-//!
-//! From there everything is identical to the aarch64 path: parse the
-//! firmware-provided table, instantiate the HAL, jump to [`crate::kmain`].
+//! GRUB picks the Multiboot2 entry-address tag over the ELF's
+//! `e_entry` field, so changing `e_entry` to `_start_uefi` (for the
+//! UEFI path) doesn't break GRUB's BIOS/EFI Multiboot2 path.
 
 use core::arch::global_asm;
 
@@ -58,6 +58,18 @@ __multiboot2_header:
     .word   6
     .word   0
     .long   8
+
+    // ---- entry-address tag (32-bit) ----
+    // GRUB-PC and GRUB-EFI both honour this tag and ignore the ELF
+    // header's e_entry field when it's present. We point it at the
+    // 32-bit-protected-mode `_start`, so changing the ELF's e_entry to
+    // the 64-bit `_start_uefi` (used by the native UEFI stub) doesn't
+    // break the GRUB / qemu-multiboot2 path.
+    .balign 8
+    .word   3                              // type = ENTRY_ADDRESS
+    .word   0                              // flags
+    .long   12                             // size
+    .long   _start                         // entry_addr (32-bit)
 
     // ---- framebuffer tag (preferred mode) ----
     .balign 8
@@ -263,4 +275,81 @@ pub extern "C" fn hyperion_kernel_kmain_trampoline(mb2_info: u64, magic: u64) ->
     // the active console driver here.
     unsafe { crate::hal::init(bi) };
     crate::kmain();
+}
+
+// 64-bit UEFI entry. The Hyperion EFI stub jumps here in long mode
+// after ExitBootServices, with `rdi` = a pointer to the
+// [`UefiHandoff`](crate::hal::boot_info::UefiHandoff) block it built
+// from GOP / memory map / EFI configuration tables. The CPU is already
+// in long mode on EFI x86_64, so unlike `_start` we don't have to
+// build page tables, switch modes, or load a GDT — UEFI's tables stay
+// usable until `gdt::install` and the kernel's own paging code run
+// later in `arch::late_init`.
+//
+// We do switch to the kernel's own __boot_stack_top because the EFI
+// stub's stack lived in EFI loader-data pages that are no longer
+// owned by anyone after ExitBootServices.
+global_asm!(
+    r#"
+    .section .text.boot, "ax"
+    .globl _start_uefi
+    .code64
+    .type _start_uefi, @function
+_start_uefi:
+    cli
+    cld
+
+    // RDI = handoff pointer (sysv first arg). Stash so we don't lose
+    // it across the stack swap.
+    mov     rax, rdi
+
+    // Switch to the kernel's pre-allocated boot stack. The EFI stub
+    // already zeroed .bss as part of loading our PT_LOAD segments, so
+    // the stack region is clean.
+    lea     rsp, [__boot_stack_top]
+
+    // Forward the handoff pointer in rdi (System V ABI first arg).
+    mov     rdi, rax
+    xor     rbp, rbp
+    call    hyperion_kernel_uefi_trampoline
+
+    // Trampoline shouldn't return; if it does, halt.
+9:  hlt
+    jmp     9b
+    .size _start_uefi, . - _start_uefi
+"#
+);
+
+/// Trampoline called from `_start_uefi`. Sister to
+/// [`hyperion_kernel_kmain_trampoline`].
+///
+/// `handoff_ptr` is the physical address of a
+/// [`UefiHandoff`](crate::hal::boot_info::UefiHandoff) block built by
+/// the Hyperion EFI stub before `ExitBootServices`. If the magic /
+/// version don't validate we fall back to
+/// [`BootInfo::qemu_q35_fallback`](crate::hal::boot_info::BootInfo::qemu_q35_fallback)
+/// so we still reach the shell — that path is identical to what the
+/// raw `-kernel` boot would have done.
+#[no_mangle]
+pub extern "C" fn hyperion_kernel_uefi_trampoline(handoff_ptr: u64) -> ! {
+    let bi = uefi_handoff(handoff_ptr).unwrap_or_else(|| {
+        // No (or malformed) handoff: drop into the same q35 fallback
+        // path Multiboot2 uses when its info block is missing.
+        unsafe { crate::hal::multiboot::parse_or_fallback(0, 0) }
+    });
+    unsafe { super::serial::early_init() };
+    unsafe { crate::hal::init(bi) };
+    crate::kmain();
+}
+
+fn uefi_handoff(addr: u64) -> Option<crate::hal::BootInfo> {
+    if addr == 0 {
+        return None;
+    }
+    // SAFETY: the EFI stub guarantees the pointer is page-aligned and
+    // points at a UefiHandoff structure for the duration of the kernel
+    // lifetime (the page is allocated as EfiLoaderData which we keep
+    // after ExitBootServices). `to_boot_info` validates magic/version.
+    let handoff = unsafe { (addr as *const crate::hal::boot_info::UefiHandoff).read_unaligned() };
+    handoff.to_boot_info()
 }

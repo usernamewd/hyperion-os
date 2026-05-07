@@ -12,7 +12,14 @@
  * for GRUB to find it).
  */
 
-ENTRY(_start)
+/* The ELF e_entry field is consumed only by the native UEFI stub
+ * (efi-stub/, x86_64-unknown-uefi). It expects to enter in 64-bit long
+ * mode, so we point e_entry at `_start_uefi` (the .code64 entry).
+ *
+ * GRUB-PC and GRUB-EFI both honour the Multiboot2 *entry-address tag*
+ * in our .multiboot2_header (which points at the .code32 `_start`)
+ * and ignore e_entry. So this only affects the native UEFI path. */
+ENTRY(_start_uefi)
 
 KERNEL_LOAD_ADDR = 0x00100000;
 

@@ -89,18 +89,12 @@ build-all:
 	$(CARGO) build -p $(KERNEL_PKG) --target x86_64-unknown-none --release
 
 efi:
-ifeq ($(ARCH),aarch64)
 	CARGO_PROFILE_RELEASE_DEBUG=false CARGO_PROFILE_RELEASE_STRIP=symbols $(CARGO) build -p $(KERNEL_PKG) --target $(TARGET) --release
 	$(EFI_KERNEL_ENV) $(CARGO) build -p $(EFI_PKG) --target $(EFI_TARGET) --release
-else
-	@echo "x86_64 EFI stub is not built separately - kernel boots via GRUB-EFI/Multiboot2"
-endif
 
 esp: efi
-ifeq ($(ARCH),aarch64)
 	mkdir -p $(ESP_DIR)/EFI/BOOT
 	cp $(EFI_BIN) $(ESP_DIR)/EFI/BOOT/$(EFI_BOOT_FN)
-endif
 
 run: build
 ifeq ($(ARCH),aarch64)
@@ -120,15 +114,17 @@ else
 endif
 
 run-efi: esp
-ifeq ($(ARCH),aarch64)
 	cp $(UEFI_VARS) $(ESP_VARS)
+ifeq ($(ARCH),aarch64)
 	$(QEMU_BASE) -display none -serial stdio -device ramfb \
 	    -drive if=pflash,format=raw,readonly=on,file=$(UEFI_CODE) \
 	    -drive if=pflash,format=raw,file=$(ESP_VARS) \
 	    -drive if=virtio,format=raw,file=fat:rw:$(ESP_DIR),readonly=off
 else
-	@echo "x86_64 has no separate EFI stub; use 'make ARCH=x86_64 run-uefi' to boot the ISO under OVMF"
-	exit 1
+	$(QEMU_SERIAL) \
+	    -drive if=pflash,format=raw,readonly=on,file=$(UEFI_CODE) \
+	    -drive if=pflash,format=raw,file=$(ESP_VARS) \
+	    -drive if=virtio,format=raw,file=fat:rw:$(ESP_DIR),readonly=off
 endif
 
 iso:
@@ -158,8 +154,7 @@ usb-img:
 ifeq ($(ARCH),aarch64)
 	./scripts/build-usb-img.sh $(USB_IMG)
 else
-	@echo "x86_64 USB image: use 'make ARCH=x86_64 iso-bios' or 'make ARCH=x86_64 iso-uefi'."
-	exit 1
+	./scripts/build-usb-img-x86_64.sh $(USB_IMG)
 endif
 
 run-bios: iso-bios
@@ -195,8 +190,10 @@ ifeq ($(ARCH),aarch64)
 	    -drive if=pflash,format=raw,file=$(USB_VARS) \
 	    -drive if=virtio,format=raw,file=$(USB_IMG)
 else
-	@echo "USB image is aarch64-only; use the x86_64 BIOS or UEFI ISO directly."
-	exit 1
+	$(QEMU_SERIAL) \
+	    -drive if=pflash,format=raw,readonly=on,file=$(UEFI_CODE) \
+	    -drive if=pflash,format=raw,file=$(USB_VARS) \
+	    -drive if=virtio,format=raw,file=$(USB_IMG)
 endif
 
 clippy:

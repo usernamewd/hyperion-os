@@ -40,11 +40,13 @@ layered systems, but at a much smaller scale).
   (physical / virtual) and a stacking **compositor** with z-ordered alpha
   blending. Default boot registers a firmware monitor if available, else a
   `1280x720` virtual one.
-- **UEFI boot loader** — separate `aarch64-unknown-uefi` PE/COFF EFI
-  application (`efi-stub/`) that can be dropped into the ESP as
-  `EFI/BOOT/BOOTAA64.EFI`. It locates GOP, embeds and loads the kernel ELF,
-  builds a handoff block from the UEFI memory map, calls `ExitBootServices`,
-  and jumps into the kernel.
+- **UEFI boot loader** — single `efi-stub/` crate that compiles for both
+  `aarch64-unknown-uefi` (`BOOTAA64.EFI`) and `x86_64-unknown-uefi`
+  (`BOOTX64.EFI`). It locates GOP, walks the EFI configuration table for
+  ACPI 2.0 / DTB pointers, embeds and loads the kernel ELF, builds a
+  unified `UefiHandoff` from the UEFI memory map, calls `ExitBootServices`,
+  and jumps into the kernel's arch-appropriate UEFI entry. No GRUB in the
+  chain on either architecture.
 - **UI building API** — `Canvas` (rect/line/text), an embedded **8×8 bitmap
   font**, and reusable `Widget` primitives (`Panel`, `Label`, `Button`).
 - **Stable extension surface** — the [`hyperion-os-api`](./libos-api) crate
@@ -74,10 +76,11 @@ make run-efi
 # Or build bootable ISO / USB images:
 sudo apt install xorriso mtools dosfstools gdisk grub-pc-bin grub-efi-amd64-bin
 make iso                     # aarch64: target/hyperion-aarch64-uefi.iso
-make ARCH=x86_64 iso         # x86_64: BIOS and UEFI ISOs
-make usb-img                 # aarch64 raw USB image
-make run-iso                 # smoke-test the UEFI ISO under QEMU + AAVMF
-make run-usb                 # smoke-test the USB image under QEMU + AAVMF
+make ARCH=x86_64 iso         # x86_64: BIOS (GRUB-PC) and UEFI (native) ISOs
+make usb-img                 # aarch64 raw USB image (BOOTAA64.EFI)
+make ARCH=x86_64 usb-img     # x86_64 raw USB image  (BOOTX64.EFI, native UEFI)
+make run-iso                 # smoke-test the UEFI ISO under QEMU + UEFI firmware
+make run-usb                 # smoke-test the USB image under QEMU + UEFI firmware
 ```
 
 You should see:
@@ -137,22 +140,30 @@ hyperion-os/
 
 ## Where it boots today
 
-- **QEMU `virt`** (`-kernel`, no firmware) — primary development target.
-- **QEMU `virt` + AAVMF UEFI firmware** — `efi-stub/` boots end-to-end,
-  discovers the UEFI GOP framebuffer, loads the embedded kernel ELF, exits
-  boot services, and hands a UEFI-populated boot block to the kernel.
-- **ARM64 UEFI ISO** (`make iso`) — bootable on real ARM64 UEFI systems
-  via optical media, virtual CD, or `dd`/Rufus to USB.
-- **x86_64 Legacy BIOS ISO** (`make ARCH=x86_64 iso-bios`) — GRUB BIOS
-  image for CSM/legacy systems.
-- **x86_64 UEFI ISO** (`make ARCH=x86_64 iso-uefi`) — GRUB EFI image for
-  modern x86_64 firmware.
-- **Raw GPT-partitioned USB image** (`make usb-img`) — drop straight
-  onto a USB stick with Rufus (DD mode), `dd`, or balenaEtcher; boots
-  on any UEFI ARM64 box.
+- **QEMU `virt`** aarch64 + x86_64 q35 (`-kernel`, no firmware) — primary
+  development target.
+- **QEMU `virt` + AAVMF UEFI firmware (aarch64)** — `efi-stub/` boots
+  end-to-end, discovers GOP, loads the embedded kernel ELF, walks the
+  EFI configuration table for DTB / ACPI 2.0, exits boot services, and
+  hands a `UefiHandoff` block to `_start_secondary`'s sibling
+  `hyperion_kernel_kmain_trampoline`.
+- **QEMU `q35` + OVMF UEFI firmware (x86_64)** — same `efi-stub/` crate
+  built for `x86_64-unknown-uefi`, ELF-loads the kernel, and tail-calls
+  `_start_uefi` with the handoff pointer in `RDI`. No GRUB on this path.
+- **ARM64 UEFI ISO / USB image** (`make iso` / `make usb-img`) —
+  bootable on real ARM64 UEFI systems; the ISO/USB carries
+  `BOOTAA64.EFI` directly.
+- **x86_64 Legacy BIOS ISO** (`make ARCH=x86_64 iso-bios`) — GRUB-PC,
+  Multiboot2 entry-address tag, kernel `_start` (32-bit protected mode).
+- **x86_64 UEFI ISO** (`make ARCH=x86_64 iso-uefi`) — native Hyperion
+  EFI stub baked into the ESP. Boots under any modern x86_64 UEFI
+  firmware via `BOOTX64.EFI`.
+- **x86_64 UEFI USB image** (`make ARCH=x86_64 usb-img`) — raw GPT
+  disk image with native `BOOTX64.EFI` in the ESP. Flashable to USB
+  with `dd` / Rufus (DD mode) / balenaEtcher.
 - **DT-described ARM64 boards** with a PL011, 16550-compatible, or
-  BCM mini-UART console and a GICv2 or GICv3 interrupt controller — should
-  work once the bootloader hands the kernel a DTB and jumps to `_start`.
+  BCM mini-UART console and a GICv2 or GICv3 interrupt controller — once
+  the bootloader hands the kernel a DTB and jumps to `_start`.
 
 ## Roadmap (post-MVP)
 

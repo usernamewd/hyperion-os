@@ -1,20 +1,35 @@
 //! Hyperion OS UEFI boot stub.
 //!
-//! This is a tiny `aarch64-unknown-uefi` PE that runs as an EFI
-//! application. Its job is to discover the firmware-provided graphics
-//! output (GOP) and memory map, then hand control to the Hyperion
-//! kernel proper.
+//! This is a tiny UEFI PE that runs as an EFI application. The same
+//! source compiles for both `aarch64-unknown-uefi` and
+//! `x86_64-unknown-uefi`; the only architecture-specific bits are the
+//! ELF `e_machine` we accept, the pre-kernel CPU prep we run before
+//! jumping to the kernel, and the halt instruction used by panic /
+//! error paths. Everything else — UEFI ABI, ELF loading, GOP probing,
+//! configuration-table walking, memory-map snapshotting,
+//! ExitBootServices — is shared.
 //!
 //! The stub:
 //!
 //! 1. Locates the **Graphics Output Protocol** (GOP) via Boot Services
 //!    and reads the active mode's framebuffer base / resolution /
 //!    stride / pixel format.
-//! 2. Loads the embedded `aarch64-unknown-none` kernel ELF into its
-//!    fixed physical segments.
-//! 3. Builds a compact handoff block from GOP and the UEFI memory map.
-//! 4. Calls `ExitBootServices`, disables firmware MMU/cache state, and
-//!    jumps to the kernel entry with the handoff pointer in `x0`.
+//! 2. Walks the **EFI Configuration Table** array on the system table
+//!    to find a Device Tree (`b1b621d5-…`) on aarch64 or an ACPI 2.0
+//!    RSDP (`8868e871-…`) on x86_64 / aarch64 server boards. The
+//!    discovered pointer is forwarded to the kernel via the handoff
+//!    block's `fw_table_addr` field so the kernel can hand it to its
+//!    DTB / ACPI parser without re-discovering it.
+//! 3. Loads the embedded `*-unknown-none` kernel ELF into its fixed
+//!    physical segments (BSS pages are zeroed; PT_LOAD bytes are
+//!    copied from the embedded image).
+//! 4. Builds a compact handoff block from GOP, the UEFI memory map,
+//!    and the configuration-table pointer. Memory regions are
+//!    coalesced and compacted into the fixed-size handoff array.
+//! 5. Calls `ExitBootServices`, runs arch-specific pre-kernel CPU
+//!    prep (aarch64: disable MMU + caches; x86_64: just CLI), and
+//!    jumps to the kernel ELF entry with the handoff pointer in the
+//!    architecture's first-arg register (x0 / rdi).
 //!
 //! The stub is deliberately self-contained — no `uefi` crate
 //! dependency, just hand-rolled UEFI types — so it stays small,
@@ -33,10 +48,20 @@ fn panic(_info: &PanicInfo) -> ! {
     halt()
 }
 
+#[cfg(target_arch = "aarch64")]
 fn halt() -> ! {
     loop {
         // SAFETY: WFE is always safe; just stalls the core.
         unsafe { core::arch::asm!("wfe", options(nomem, nostack)) };
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn halt() -> ! {
+    loop {
+        // SAFETY: HLT in ring 0 is always safe (we are running in CPL=0
+        // under the EFI loader, before/after ExitBootServices).
+        unsafe { core::arch::asm!("hlt", options(nomem, nostack)) };
     }
 }
 
@@ -58,6 +83,14 @@ const UEFI_HANDOFF_MAGIC: u64 = 0x4859_5055_4546_4948;
 const UEFI_HANDOFF_VERSION: u32 = 1;
 const PT_LOAD: u32 = 1;
 
+/// ELF `e_machine` value for the architecture this stub was compiled
+/// for. Used to reject a kernel ELF that was accidentally compiled for
+/// the other architecture.
+#[cfg(target_arch = "aarch64")]
+const KERNEL_ELF_MACHINE: u16 = 0xb7; // EM_AARCH64
+#[cfg(target_arch = "x86_64")]
+const KERNEL_ELF_MACHINE: u16 = 0x3e; // EM_X86_64
+
 static KERNEL_ELF: &[u8] = include_bytes!(env!("HYPERION_KERNEL_ELF"));
 static mut MEMORY_MAP_BUF: [u8; MEMORY_MAP_BUF_SIZE] = [0; MEMORY_MAP_BUF_SIZE];
 
@@ -74,6 +107,7 @@ struct EfiTableHeader {
 }
 
 #[repr(C)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 struct EfiGuid(u32, u16, u16, [u8; 8]);
 
 const EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID: EfiGuid = EfiGuid(
@@ -81,6 +115,37 @@ const EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID: EfiGuid = EfiGuid(
     0x23dc,
     0x4a38,
     [0x96, 0xfb, 0x7a, 0xde, 0xd0, 0x80, 0x51, 0x6a],
+);
+
+/// `EFI_ACPI_TABLE_GUID` — points at an ACPI 2.0+ RSDP. On any modern
+/// server / workstation this is the right way to locate ACPI from
+/// UEFI; we consume it on x86_64 (and aarch64 server boards) and
+/// pass it to the kernel via `fw_table_addr`.
+const EFI_ACPI_20_TABLE_GUID: EfiGuid = EfiGuid(
+    0x8868e871,
+    0xe4f1,
+    0x11d3,
+    [0xbc, 0x22, 0x00, 0x80, 0xc7, 0x3c, 0x88, 0x81],
+);
+
+/// `EFI_ACPI_TABLE_GUID` — older ACPI 1.0 RSDP. Only appears on truly
+/// ancient firmware; we accept it as a fallback when the 2.0 GUID is
+/// missing.
+const EFI_ACPI_10_TABLE_GUID: EfiGuid = EfiGuid(
+    0xeb9d2d30,
+    0x2d88,
+    0x11d3,
+    [0x9a, 0x16, 0x00, 0x90, 0x27, 0x3f, 0xc1, 0x4d],
+);
+
+/// `EFI_DTB_TABLE_GUID` — UEFI device tree table (ARM SBBR §2.4 /
+/// EBBR §3.7). Found in the configuration table on every UEFI ARM
+/// board that ships a DTB rather than ACPI.
+const EFI_DTB_TABLE_GUID: EfiGuid = EfiGuid(
+    0xb1b621d5,
+    0xf19c,
+    0x41a5,
+    [0x83, 0x0b, 0xd9, 0x15, 0x2c, 0x69, 0xaa, 0xe0],
 );
 
 #[repr(C)]
@@ -172,6 +237,13 @@ struct EfiBootServices {
 }
 
 #[repr(C)]
+#[derive(Clone, Copy)]
+struct EfiConfigurationTable {
+    vendor_guid: EfiGuid,
+    vendor_table: *const c_void,
+}
+
+#[repr(C)]
 struct EfiSystemTable {
     hdr: EfiTableHeader,
     firmware_vendor: *const u16,
@@ -190,7 +262,7 @@ struct EfiSystemTable {
     boot_services: *mut EfiBootServices,
 
     number_of_table_entries: usize,
-    configuration_table: *const c_void,
+    configuration_table: *const EfiConfigurationTable,
 }
 
 // ---------- GOP types ----------
@@ -411,7 +483,7 @@ fn load_kernel_elf(bs: *mut EfiBootServices) -> Option<u64> {
     if &ehdr.e_ident[0..4] != b"\x7fELF"
         || ehdr.e_ident[4] != 2
         || ehdr.e_ident[5] != 1
-        || ehdr.e_machine != 0xb7
+        || ehdr.e_machine != KERNEL_ELF_MACHINE
         || ehdr.e_phentsize as usize != mem::size_of::<Elf64Phdr>()
     {
         return None;
@@ -509,7 +581,62 @@ fn push_memory_region(handoff: &mut EfiHandoff, base: u64, size: u64) {
     }
 }
 
-fn build_handoff(map: &MemoryMapSnapshot, mode: *mut EfiGraphicsOutputProtocolMode) -> EfiHandoff {
+/// Walk the EFI Configuration Table to find a firmware-provided
+/// reference table the kernel can hand to its DTB / ACPI parser.
+///
+/// On aarch64 we prefer a UEFI device-tree table (DTB) and fall back
+/// to ACPI 2.0+ if there is no DTB. On x86_64 we always prefer ACPI;
+/// DTB is unsupported on PC firmware. ACPI 1.0 is accepted as a final
+/// fallback in case we boot under truly ancient firmware.
+fn find_firmware_table(st: &EfiSystemTable) -> u64 {
+    if st.configuration_table.is_null() || st.number_of_table_entries == 0 {
+        return 0;
+    }
+
+    let n = st.number_of_table_entries;
+    // SAFETY: firmware guarantees `configuration_table` points to an
+    // array of `number_of_table_entries` valid `EfiConfigurationTable`
+    // entries for the lifetime of the system table.
+    let table = unsafe { core::slice::from_raw_parts(st.configuration_table, n) };
+
+    // Preference order is arch-dependent.
+    #[cfg(target_arch = "aarch64")]
+    let preferred = [
+        EFI_DTB_TABLE_GUID,
+        EFI_ACPI_20_TABLE_GUID,
+        EFI_ACPI_10_TABLE_GUID,
+    ];
+    #[cfg(target_arch = "x86_64")]
+    let preferred = [
+        EFI_ACPI_20_TABLE_GUID,
+        EFI_ACPI_10_TABLE_GUID,
+        EFI_DTB_TABLE_GUID,
+    ];
+
+    for guid in &preferred {
+        for entry in table.iter() {
+            if entry.vendor_guid == *guid {
+                return entry.vendor_table as u64;
+            }
+        }
+    }
+    0
+}
+
+/// Build the [`EfiHandoff`] block from the captured GOP mode, UEFI
+/// memory map snapshot, and firmware configuration-table pointer.
+///
+/// `intc_kind` / `console_kind` are filled in arch-appropriately: on
+/// aarch64 we leave them at the QEMU virt defaults (PL011 / GICv2)
+/// because real DTB / ACPI parsing happens later in the kernel. On
+/// x86_64 we publish NS16550 / APIC so the kernel's HAL hits the
+/// right driver immediately even when the configuration table is
+/// missing.
+fn build_handoff(
+    map: &MemoryMapSnapshot,
+    mode: *mut EfiGraphicsOutputProtocolMode,
+    fw_table_addr: u64,
+) -> EfiHandoff {
     let (fb_base, fb_size, w, h, stride, pf) = unsafe {
         let m = &*mode;
         let info = &*m.info;
@@ -528,19 +655,68 @@ fn build_handoff(map: &MemoryMapSnapshot, mode: *mut EfiGraphicsOutputProtocolMo
         } else {
             0
         };
+
+    // Architecture-specific defaults for the console and interrupt
+    // controller. The kernel-side parser will override these from the
+    // firmware-provided configuration table once it's parsed.
+    #[cfg(target_arch = "aarch64")]
+    let (
+        console_kind,
+        console_base,
+        console_size,
+        console_clock_hz,
+        intc_kind,
+        intc_primary_base,
+        intc_primary_size,
+        intc_secondary_base,
+        intc_secondary_size,
+    ) = (
+        0u32,           // ConsoleKind::Pl011
+        0x0900_0000u64, // QEMU virt PL011
+        0x1000u64,
+        24_000_000u32,
+        0u32, // IntcKind::GicV2
+        0x0800_0000u64,
+        0x10000u64,
+        0x0801_0000u64,
+        0x10000u64,
+    );
+    #[cfg(target_arch = "x86_64")]
+    let (
+        console_kind,
+        console_base,
+        console_size,
+        console_clock_hz,
+        intc_kind,
+        intc_primary_base,
+        intc_primary_size,
+        intc_secondary_base,
+        intc_secondary_size,
+    ) = (
+        1u32,     // ConsoleKind::Ns16550
+        0x3F8u64, // COM1
+        8u64,
+        1_843_200u32,
+        2u32, // IntcKind::Apic
+        0xFEE0_0000u64,
+        0x1000u64,
+        0xFEC0_0000u64,
+        0x1000u64,
+    );
+
     let mut handoff = EfiHandoff {
         magic: UEFI_HANDOFF_MAGIC,
         version: UEFI_HANDOFF_VERSION,
         _reserved0: 0,
-        console_kind: 0,
-        console_base: 0x0900_0000,
-        console_size: 0x1000,
-        console_clock_hz: 24_000_000,
-        intc_kind: 0,
-        intc_primary_base: 0x0800_0000,
-        intc_primary_size: 0x10000,
-        intc_secondary_base: 0x0801_0000,
-        intc_secondary_size: 0x10000,
+        console_kind,
+        console_base,
+        console_size,
+        console_clock_hz,
+        intc_kind,
+        intc_primary_base,
+        intc_primary_size,
+        intc_secondary_base,
+        intc_secondary_size,
         timer_freq_hz: 0,
         memory_len: 0,
         memory: [HandoffMemoryRegion { base: 0, size: 0 }; MAX_MEMORY_REGIONS],
@@ -552,7 +728,7 @@ fn build_handoff(map: &MemoryMapSnapshot, mode: *mut EfiGraphicsOutputProtocolMo
         framebuffer_stride_bytes: stride,
         framebuffer_bpp: 32,
         framebuffer_format,
-        fw_table_addr: 0,
+        fw_table_addr,
     };
 
     let mut off = 0usize;
@@ -568,7 +744,13 @@ fn build_handoff(map: &MemoryMapSnapshot, mode: *mut EfiGraphicsOutputProtocolMo
         off = off.saturating_add(map.desc_size);
     }
     if handoff.memory_len == 0 {
+        // Couldn't decode any conventional memory descriptors. Fall
+        // back to a known-good range per arch (matches the kernel's
+        // qemu_*_fallback so we boot reliably either way).
+        #[cfg(target_arch = "aarch64")]
         push_memory_region(&mut handoff, 0x4000_0000, 256 * 1024 * 1024);
+        #[cfg(target_arch = "x86_64")]
+        push_memory_region(&mut handoff, 0x10_0000, 128 * 1024 * 1024);
     }
     handoff
 }
@@ -578,6 +760,7 @@ fn exit_boot_services(
     bs: *mut EfiBootServices,
     con_out: *mut EfiSimpleTextOutputProtocol,
     mode: *mut EfiGraphicsOutputProtocolMode,
+    fw_table_addr: u64,
 ) -> EfiHandoff {
     for _ in 0..3 {
         let map = match get_memory_map(bs) {
@@ -587,7 +770,7 @@ fn exit_boot_services(
                 halt();
             }
         };
-        let handoff = build_handoff(&map, mode);
+        let handoff = build_handoff(&map, mode, fw_table_addr);
         let status = unsafe { ((*bs).exit_boot_services)(image, map.key) };
         if status == EFI_SUCCESS {
             return handoff;
@@ -597,6 +780,17 @@ fn exit_boot_services(
     halt();
 }
 
+/// Architecture-specific pre-kernel CPU prep that runs *after*
+/// ExitBootServices but *before* the jump into the kernel image.
+///
+/// On aarch64 we mask DAIF, then disable the EL1 MMU + I-cache + D-
+/// cache and invalidate the TLB so the kernel's own boot path (which
+/// re-establishes a clean state) doesn't see stale firmware mappings.
+///
+/// On x86_64 the firmware stayed in long mode all along; we only
+/// guarantee interrupts are masked. Page-table / GDT / IDT teardown
+/// happens in the kernel's `arch::late_init`.
+#[cfg(target_arch = "aarch64")]
 fn prepare_cpu_for_kernel() {
     unsafe {
         core::arch::asm!(
@@ -614,6 +808,15 @@ fn prepare_cpu_for_kernel() {
             out("x9") _,
             options(nostack, preserves_flags)
         );
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn prepare_cpu_for_kernel() {
+    // SAFETY: CLI is privileged but always safe in CPL=0; we are CPL=0
+    // since UEFI x86_64 runs us in long mode at ring 0.
+    unsafe {
+        core::arch::asm!("cli", options(nomem, nostack));
     }
 }
 
@@ -699,6 +902,19 @@ extern "efiapi" fn efi_main(image: EFI_HANDLE, system_table: *mut EfiSystemTable
 
     print(con_out, "\r\nHyperion EFI stub starting...\r\n");
 
+    // ---- Locate firmware configuration table (DTB or ACPI RSDP) ----
+    let fw_table_addr = find_firmware_table(st);
+    if fw_table_addr != 0 {
+        print(con_out, "Firmware table @ ");
+        print_u64_hex(con_out, fw_table_addr);
+        print(con_out, "\r\n");
+    } else {
+        print(
+            con_out,
+            "No DTB/ACPI table from firmware; kernel will use fallback HAL.\r\n",
+        );
+    }
+
     // ---- Locate GOP ----
     let mut gop_ptr: *mut c_void = ptr::null_mut();
     // SAFETY: LocateProtocol is a standard UEFI service call.
@@ -756,6 +972,6 @@ extern "efiapi" fn efi_main(image: EFI_HANDLE, system_table: *mut EfiSystemTable
     };
     print(con_out, "Kernel loaded; exiting boot services.\r\n");
 
-    let handoff = exit_boot_services(image, bs, con_out, mode);
+    let handoff = exit_boot_services(image, bs, con_out, mode, fw_table_addr);
     jump_to_kernel(entry, &handoff);
 }
