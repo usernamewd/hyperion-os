@@ -5,22 +5,16 @@
 //! output (GOP) and memory map, then hand control to the Hyperion
 //! kernel proper.
 //!
-//! Right now this stub:
+//! The stub:
 //!
 //! 1. Locates the **Graphics Output Protocol** (GOP) via Boot Services
 //!    and reads the active mode's framebuffer base / resolution /
 //!    stride / pixel format.
-//! 2. Prints a banner + the framebuffer description to UEFI ConOut so
-//!    you can confirm in the firmware console that the stub ran.
-//! 3. Paints a recognisable test pattern straight into the GOP
-//!    framebuffer (Hyperion stripes + a centred white square). This
-//!    proves the framebuffer is real and writable from the stub.
-//! 4. Halts.
-//!
-//! A follow-up iteration will load the kernel ELF (currently produced
-//! as `aarch64-unknown-none`), exit boot services, and jump to it with
-//! a populated `BootInfo`. The kernel side is already prepared to
-//! accept that handover (`hal::init` + `kmain` take a `BootInfo`).
+//! 2. Loads the embedded `aarch64-unknown-none` kernel ELF into its
+//!    fixed physical segments.
+//! 3. Builds a compact handoff block from GOP and the UEFI memory map.
+//! 4. Calls `ExitBootServices`, disables firmware MMU/cache state, and
+//!    jumps to the kernel entry with the handoff pointer in `x0`.
 //!
 //! The stub is deliberately self-contained — no `uefi` crate
 //! dependency, just hand-rolled UEFI types — so it stays small,
@@ -30,6 +24,7 @@
 #![no_main]
 
 use core::ffi::c_void;
+use core::mem;
 use core::panic::PanicInfo;
 use core::ptr;
 
@@ -53,6 +48,19 @@ type EFI_STATUS = usize;
 type EFI_HANDLE = *mut c_void;
 
 const EFI_SUCCESS: EFI_STATUS = 0;
+const EFI_PAGE_SIZE: u64 = 4096;
+const EFI_ALLOCATE_ADDRESS: u32 = 2;
+const EFI_LOADER_DATA: u32 = 2;
+const EFI_CONVENTIONAL_MEMORY: u32 = 7;
+const MEMORY_MAP_BUF_SIZE: usize = 64 * 1024;
+const MAX_MEMORY_REGIONS: usize = 8;
+const UEFI_HANDOFF_MAGIC: u64 = 0x4859_5055_4546_4948;
+const UEFI_HANDOFF_VERSION: u32 = 1;
+const PT_LOAD: u32 = 1;
+
+static KERNEL_ELF: &[u8] = include_bytes!(env!("HYPERION_KERNEL_ELF"));
+static mut MEMORY_MAP_BUF: [u8; MEMORY_MAP_BUF_SIZE] = [0; MEMORY_MAP_BUF_SIZE];
+
 // Status codes use the high bit on 64-bit systems; we only need to
 // distinguish "ok" from "anything else".
 
@@ -91,7 +99,7 @@ struct EfiBootServices {
     restore_tpl: *const c_void,
 
     // Memory
-    allocate_pages: *const c_void,
+    allocate_pages: extern "efiapi" fn(u32, u32, usize, *mut u64) -> EFI_STATUS,
     free_pages: *const c_void,
     get_memory_map: extern "efiapi" fn(
         *mut usize,  // mmap_size in/out
@@ -235,6 +243,92 @@ struct EfiGraphicsOutputProtocol {
     mode: *mut EfiGraphicsOutputProtocolMode,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct EfiMemoryDescriptor {
+    typ: u32,
+    _pad: u32,
+    physical_start: u64,
+    virtual_start: u64,
+    number_of_pages: u64,
+    attribute: u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct HandoffMemoryRegion {
+    base: u64,
+    size: u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct EfiHandoff {
+    magic: u64,
+    version: u32,
+    _reserved0: u32,
+    console_kind: u32,
+    console_base: u64,
+    console_size: u64,
+    console_clock_hz: u32,
+    intc_kind: u32,
+    intc_primary_base: u64,
+    intc_primary_size: u64,
+    intc_secondary_base: u64,
+    intc_secondary_size: u64,
+    timer_freq_hz: u32,
+    memory_len: u32,
+    memory: [HandoffMemoryRegion; MAX_MEMORY_REGIONS],
+    framebuffer_present: u32,
+    framebuffer_base: u64,
+    framebuffer_size: u64,
+    framebuffer_width: u32,
+    framebuffer_height: u32,
+    framebuffer_stride_bytes: u32,
+    framebuffer_bpp: u32,
+    framebuffer_format: u32,
+    fw_table_addr: u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct Elf64Ehdr {
+    e_ident: [u8; 16],
+    e_type: u16,
+    e_machine: u16,
+    e_version: u32,
+    e_entry: u64,
+    e_phoff: u64,
+    e_shoff: u64,
+    e_flags: u32,
+    e_ehsize: u16,
+    e_phentsize: u16,
+    e_phnum: u16,
+    e_shentsize: u16,
+    e_shnum: u16,
+    e_shstrndx: u16,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct Elf64Phdr {
+    p_type: u32,
+    p_flags: u32,
+    p_offset: u64,
+    p_vaddr: u64,
+    p_paddr: u64,
+    p_filesz: u64,
+    p_memsz: u64,
+    p_align: u64,
+}
+
+struct MemoryMapSnapshot {
+    ptr: *mut u8,
+    size: usize,
+    key: usize,
+    desc_size: usize,
+}
+
 // ---------- Helpers ----------
 
 /// Convert an ASCII byte slice to a stack-allocated UCS-2 array,
@@ -294,6 +388,239 @@ fn print_u64_hex(con_out: *mut EfiSimpleTextOutputProtocol, n: u64) {
     }
     let s = core::str::from_utf8(&buf).unwrap_or("?");
     print(con_out, s);
+}
+
+fn align_down(value: u64, align: u64) -> u64 {
+    value & !(align - 1)
+}
+
+fn align_up(value: u64, align: u64) -> Option<u64> {
+    value.checked_add(align - 1).map(|v| align_down(v, align))
+}
+
+fn read_at<T: Copy>(bytes: &[u8], offset: usize) -> Option<T> {
+    let end = offset.checked_add(mem::size_of::<T>())?;
+    if end > bytes.len() {
+        return None;
+    }
+    Some(unsafe { ptr::read_unaligned(bytes.as_ptr().add(offset) as *const T) })
+}
+
+fn load_kernel_elf(bs: *mut EfiBootServices) -> Option<u64> {
+    let ehdr: Elf64Ehdr = read_at(KERNEL_ELF, 0)?;
+    if &ehdr.e_ident[0..4] != b"\x7fELF"
+        || ehdr.e_ident[4] != 2
+        || ehdr.e_ident[5] != 1
+        || ehdr.e_machine != 0xb7
+        || ehdr.e_phentsize as usize != mem::size_of::<Elf64Phdr>()
+    {
+        return None;
+    }
+
+    let mut load_min = u64::MAX;
+    let mut load_max = 0u64;
+    for i in 0..ehdr.e_phnum as usize {
+        let off = (ehdr.e_phoff as usize).checked_add(i.checked_mul(ehdr.e_phentsize as usize)?)?;
+        let phdr: Elf64Phdr = read_at(KERNEL_ELF, off)?;
+        if phdr.p_type != PT_LOAD || phdr.p_memsz == 0 {
+            continue;
+        }
+        let start = align_down(phdr.p_paddr, EFI_PAGE_SIZE);
+        let end = align_up(phdr.p_paddr.checked_add(phdr.p_memsz)?, EFI_PAGE_SIZE)?;
+        load_min = load_min.min(start);
+        load_max = load_max.max(end);
+    }
+    if load_min == u64::MAX || load_max <= load_min {
+        return None;
+    }
+
+    let pages = ((load_max - load_min) / EFI_PAGE_SIZE) as usize;
+    let mut addr = load_min;
+    let status =
+        unsafe { ((*bs).allocate_pages)(EFI_ALLOCATE_ADDRESS, EFI_LOADER_DATA, pages, &mut addr) };
+    if status != EFI_SUCCESS || addr != load_min {
+        return None;
+    }
+
+    let len = (load_max - load_min) as usize;
+    unsafe { ptr::write_bytes(load_min as *mut u8, 0, len) };
+    for i in 0..ehdr.e_phnum as usize {
+        let off = (ehdr.e_phoff as usize).checked_add(i.checked_mul(ehdr.e_phentsize as usize)?)?;
+        let phdr: Elf64Phdr = read_at(KERNEL_ELF, off)?;
+        if phdr.p_type != PT_LOAD || phdr.p_filesz == 0 {
+            continue;
+        }
+        let file_end = phdr.p_offset.checked_add(phdr.p_filesz)? as usize;
+        if file_end > KERNEL_ELF.len() {
+            return None;
+        }
+        unsafe {
+            ptr::copy_nonoverlapping(
+                KERNEL_ELF.as_ptr().add(phdr.p_offset as usize),
+                phdr.p_paddr as *mut u8,
+                phdr.p_filesz as usize,
+            );
+        }
+    }
+    Some(ehdr.e_entry)
+}
+
+fn get_memory_map(bs: *mut EfiBootServices) -> Option<MemoryMapSnapshot> {
+    let ptr = ptr::addr_of_mut!(MEMORY_MAP_BUF).cast::<u8>();
+    let mut size = MEMORY_MAP_BUF_SIZE;
+    let mut key = 0usize;
+    let mut desc_size = 0usize;
+    let mut desc_version = 0u32;
+    let status = unsafe {
+        ((*bs).get_memory_map)(
+            &mut size,
+            ptr.cast::<c_void>(),
+            &mut key,
+            &mut desc_size,
+            &mut desc_version,
+        )
+    };
+    if status != EFI_SUCCESS || desc_size < mem::size_of::<EfiMemoryDescriptor>() {
+        return None;
+    }
+    Some(MemoryMapSnapshot {
+        ptr,
+        size,
+        key,
+        desc_size,
+    })
+}
+
+fn push_memory_region(handoff: &mut EfiHandoff, base: u64, size: u64) {
+    if size == 0 {
+        return;
+    }
+    let len = handoff.memory_len as usize;
+    if len > 0 {
+        let prev = &mut handoff.memory[len - 1];
+        if prev.base.saturating_add(prev.size) == base {
+            prev.size = prev.size.saturating_add(size);
+            return;
+        }
+    }
+    if len < MAX_MEMORY_REGIONS {
+        handoff.memory[len] = HandoffMemoryRegion { base, size };
+        handoff.memory_len += 1;
+    }
+}
+
+fn build_handoff(map: &MemoryMapSnapshot, mode: *mut EfiGraphicsOutputProtocolMode) -> EfiHandoff {
+    let (fb_base, fb_size, w, h, stride, pf) = unsafe {
+        let m = &*mode;
+        let info = &*m.info;
+        (
+            m.framebuffer_base,
+            m.framebuffer_size as u64,
+            info.horizontal_resolution,
+            info.vertical_resolution,
+            info.pixels_per_scan_line.saturating_mul(4),
+            info.pixel_format,
+        )
+    };
+    let framebuffer_format =
+        if pf == EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor as u32 {
+            1
+        } else {
+            0
+        };
+    let mut handoff = EfiHandoff {
+        magic: UEFI_HANDOFF_MAGIC,
+        version: UEFI_HANDOFF_VERSION,
+        _reserved0: 0,
+        console_kind: 0,
+        console_base: 0x0900_0000,
+        console_size: 0x1000,
+        console_clock_hz: 24_000_000,
+        intc_kind: 0,
+        intc_primary_base: 0x0800_0000,
+        intc_primary_size: 0x10000,
+        intc_secondary_base: 0x0801_0000,
+        intc_secondary_size: 0x10000,
+        timer_freq_hz: 0,
+        memory_len: 0,
+        memory: [HandoffMemoryRegion { base: 0, size: 0 }; MAX_MEMORY_REGIONS],
+        framebuffer_present: 1,
+        framebuffer_base: fb_base,
+        framebuffer_size: fb_size,
+        framebuffer_width: w,
+        framebuffer_height: h,
+        framebuffer_stride_bytes: stride,
+        framebuffer_bpp: 32,
+        framebuffer_format,
+        fw_table_addr: 0,
+    };
+
+    let mut off = 0usize;
+    while off + mem::size_of::<EfiMemoryDescriptor>() <= map.size {
+        let desc = unsafe { ptr::read_unaligned(map.ptr.add(off) as *const EfiMemoryDescriptor) };
+        if desc.typ == EFI_CONVENTIONAL_MEMORY {
+            push_memory_region(
+                &mut handoff,
+                desc.physical_start,
+                desc.number_of_pages.saturating_mul(EFI_PAGE_SIZE),
+            );
+        }
+        off = off.saturating_add(map.desc_size);
+    }
+    if handoff.memory_len == 0 {
+        push_memory_region(&mut handoff, 0x4000_0000, 256 * 1024 * 1024);
+    }
+    handoff
+}
+
+fn exit_boot_services(
+    image: EFI_HANDLE,
+    bs: *mut EfiBootServices,
+    con_out: *mut EfiSimpleTextOutputProtocol,
+    mode: *mut EfiGraphicsOutputProtocolMode,
+) -> EfiHandoff {
+    for _ in 0..3 {
+        let map = match get_memory_map(bs) {
+            Some(map) => map,
+            None => {
+                print(con_out, "GetMemoryMap failed; halting.\r\n");
+                halt();
+            }
+        };
+        let handoff = build_handoff(&map, mode);
+        let status = unsafe { ((*bs).exit_boot_services)(image, map.key) };
+        if status == EFI_SUCCESS {
+            return handoff;
+        }
+    }
+    print(con_out, "ExitBootServices failed; halting.\r\n");
+    halt();
+}
+
+fn prepare_cpu_for_kernel() {
+    unsafe {
+        core::arch::asm!(
+            "msr daifset, #0xf",
+            "dsb sy",
+            "mrs x9, sctlr_el1",
+            "bic x9, x9, #1",
+            "bic x9, x9, #(1 << 2)",
+            "bic x9, x9, #(1 << 12)",
+            "msr sctlr_el1, x9",
+            "isb",
+            "tlbi vmalle1",
+            "dsb sy",
+            "isb",
+            out("x9") _,
+            options(nostack, preserves_flags)
+        );
+    }
+}
+
+fn jump_to_kernel(entry: u64, handoff: &EfiHandoff) -> ! {
+    prepare_cpu_for_kernel();
+    let kernel_entry: extern "C" fn(u64) -> ! = unsafe { mem::transmute(entry as usize) };
+    kernel_entry(handoff as *const EfiHandoff as u64)
 }
 
 // ---------- GOP test pattern ----------
@@ -364,7 +691,7 @@ fn paint_pattern(mode: *mut EfiGraphicsOutputProtocolMode) {
 // ---------- Entry ----------
 
 #[no_mangle]
-extern "efiapi" fn efi_main(_image: EFI_HANDLE, system_table: *mut EfiSystemTable) -> EFI_STATUS {
+extern "efiapi" fn efi_main(image: EFI_HANDLE, system_table: *mut EfiSystemTable) -> EFI_STATUS {
     // SAFETY: firmware guarantees a valid system table on entry.
     let st = unsafe { &mut *system_table };
     let con_out = st.con_out;
@@ -419,6 +746,16 @@ extern "efiapi" fn efi_main(_image: EFI_HANDLE, system_table: *mut EfiSystemTabl
 
     paint_pattern(mode);
 
-    print(con_out, "Test pattern painted; halting.\r\n");
-    halt();
+    print(con_out, "Loading embedded kernel ELF...\r\n");
+    let entry = match load_kernel_elf(bs) {
+        Some(entry) => entry,
+        None => {
+            print(con_out, "Kernel ELF load failed; halting.\r\n");
+            halt();
+        }
+    };
+    print(con_out, "Kernel loaded; exiting boot services.\r\n");
+
+    let handoff = exit_boot_services(image, bs, con_out, mode);
+    jump_to_kernel(entry, &handoff);
 }

@@ -98,7 +98,9 @@ pub enum PixelFormat {
     Rgba8888,
 }
 
-const MAX_MEMORY_REGIONS: usize = 8;
+pub const MAX_MEMORY_REGIONS: usize = 8;
+pub const UEFI_HANDOFF_MAGIC: u64 = 0x4859_5055_4546_4948;
+pub const UEFI_HANDOFF_VERSION: u32 = 1;
 
 /// Aggregated machine description, passed to [`crate::kmain`] by the boot
 /// stub. Construction is fallible (we may discover unsupported hardware),
@@ -223,6 +225,101 @@ impl MemoryMap {
 impl fmt::Debug for MemoryMap {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_list().entries(self.as_slice()).finish()
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct HandoffMemoryRegion {
+    pub base: u64,
+    pub size: u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct UefiHandoff {
+    pub magic: u64,
+    pub version: u32,
+    pub _reserved0: u32,
+    pub console_kind: u32,
+    pub console_base: u64,
+    pub console_size: u64,
+    pub console_clock_hz: u32,
+    pub intc_kind: u32,
+    pub intc_primary_base: u64,
+    pub intc_primary_size: u64,
+    pub intc_secondary_base: u64,
+    pub intc_secondary_size: u64,
+    pub timer_freq_hz: u32,
+    pub memory_len: u32,
+    pub memory: [HandoffMemoryRegion; MAX_MEMORY_REGIONS],
+    pub framebuffer_present: u32,
+    pub framebuffer_base: u64,
+    pub framebuffer_size: u64,
+    pub framebuffer_width: u32,
+    pub framebuffer_height: u32,
+    pub framebuffer_stride_bytes: u32,
+    pub framebuffer_bpp: u32,
+    pub framebuffer_format: u32,
+    pub fw_table_addr: u64,
+}
+
+impl UefiHandoff {
+    pub fn to_boot_info(self) -> Option<BootInfo> {
+        if self.magic != UEFI_HANDOFF_MAGIC || self.version != UEFI_HANDOFF_VERSION {
+            return None;
+        }
+        let console_kind = match self.console_kind {
+            0 => ConsoleKind::Pl011,
+            1 => ConsoleKind::Ns16550,
+            2 => ConsoleKind::BcmMiniUart,
+            _ => return None,
+        };
+        let intc_kind = match self.intc_kind {
+            0 => IntcKind::GicV2,
+            1 => IntcKind::GicV3,
+            2 => IntcKind::Apic,
+            3 => IntcKind::Pic8259,
+            _ => return None,
+        };
+        let mut memory = MemoryMap::empty();
+        let len = (self.memory_len as usize).min(MAX_MEMORY_REGIONS);
+        for region in self.memory.iter().take(len) {
+            memory.push(MemoryRegion::new(region.base, region.size));
+        }
+        let framebuffer = if self.framebuffer_present != 0 {
+            let format = match self.framebuffer_format {
+                0 => PixelFormat::Bgra8888,
+                1 => PixelFormat::Rgba8888,
+                _ => return None,
+            };
+            Some(FramebufferInfo {
+                base: self.framebuffer_base,
+                width: self.framebuffer_width,
+                height: self.framebuffer_height,
+                stride_bytes: self.framebuffer_stride_bytes,
+                bpp: self.framebuffer_bpp,
+                format,
+            })
+        } else {
+            None
+        };
+        Some(BootInfo {
+            console: ConsoleSpec {
+                kind: console_kind,
+                regs: RegSpec::new(self.console_base, self.console_size),
+                clock_hz: self.console_clock_hz,
+            },
+            memory,
+            intc: IntcSpec {
+                kind: intc_kind,
+                primary: RegSpec::new(self.intc_primary_base, self.intc_primary_size),
+                secondary: RegSpec::new(self.intc_secondary_base, self.intc_secondary_size),
+            },
+            timer_freq_hz: self.timer_freq_hz,
+            framebuffer,
+            fw_table_addr: self.fw_table_addr,
+        })
     }
 }
 

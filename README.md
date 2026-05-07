@@ -40,11 +40,11 @@ layered systems, but at a much smaller scale).
   (physical / virtual) and a stacking **compositor** with z-ordered alpha
   blending. Default boot registers a firmware monitor if available, else a
   `1280x720` virtual one.
-- **UEFI boot stub** — separate `aarch64-unknown-uefi` PE/COFF EFI
+- **UEFI boot loader** — separate `aarch64-unknown-uefi` PE/COFF EFI
   application (`efi-stub/`) that can be dropped into the ESP as
-  `EFI/BOOT/BOOTAA64.EFI`. Currently locates GOP, prints framebuffer info to
-  the firmware console, and paints a test pattern; kernel handover patch is
-  the next step in this series.
+  `EFI/BOOT/BOOTAA64.EFI`. It locates GOP, embeds and loads the kernel ELF,
+  builds a handoff block from the UEFI memory map, calls `ExitBootServices`,
+  and jumps into the kernel.
 - **UI building API** — `Canvas` (rect/line/text), an embedded **8×8 bitmap
   font**, and reusable `Widget` primitives (`Panel`, `Label`, `Button`).
 - **Stable extension surface** — the [`hyperion-os-api`](./libos-api) crate
@@ -139,8 +139,8 @@ hyperion-os/
 
 - **QEMU `virt`** (`-kernel`, no firmware) — primary development target.
 - **QEMU `virt` + AAVMF UEFI firmware** — `efi-stub/` boots end-to-end,
-  discovers the UEFI GOP framebuffer, paints a test pattern. Kernel
-  handover from the stub is the next iteration.
+  discovers the UEFI GOP framebuffer, loads the embedded kernel ELF, exits
+  boot services, and hands a UEFI-populated boot block to the kernel.
 - **ARM64 UEFI ISO** (`make iso`) — bootable on real ARM64 UEFI systems
   via optical media, virtual CD, or `dd`/Rufus to USB.
 - **x86_64 Legacy BIOS ISO** (`make ARCH=x86_64 iso-bios`) — GRUB BIOS
@@ -156,8 +156,6 @@ hyperion-os/
 
 ## Roadmap (post-MVP)
 
-- UEFI handover wiring: stub builds a `BootInfo`, calls `ExitBootServices`,
-  loads the kernel ELF and jumps with the populated `BootInfo` pre-installed.
 - virtio-gpu PCI driver + scanout flush (real graphical window without UEFI).
 - Multi-core scheduler (parking is in place; SMP wakeup via PSCI `CPU_ON`).
 - EL0 user processes wired through `SVC #0` (dispatcher exists, switching is

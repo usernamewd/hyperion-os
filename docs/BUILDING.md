@@ -86,9 +86,9 @@ make run-efi       # build + run under QEMU + AAVMF UEFI firmware
 
 `run-efi` boots OVMF/AAVMF firmware, which auto-loads
 `EFI/BOOT/BOOTAA64.EFI` from the synthetic FAT image, locates a
-`EFI_GRAPHICS_OUTPUT_PROTOCOL`, prints the discovered framebuffer
-geometry to the UEFI serial console, and paints a Hyperion test
-pattern into the framebuffer to prove the path is live.
+`EFI_GRAPHICS_OUTPUT_PROTOCOL`, embeds and loads the kernel ELF,
+exits boot services, and jumps into the kernel with a UEFI handoff
+block containing RAM and framebuffer details.
 
 Expected output on a fresh `make run-efi`:
 
@@ -99,12 +99,11 @@ BdsDxe: starting Boot0002 ...
 Hyperion EFI stub starting...
 GOP framebuffer @ 0x0000000058430000 size=0x0000000000300000
   resolution=800x600 stride=800 pixfmt=1
-Test pattern painted; halting.
+Loading embedded kernel ELF...
+Kernel loaded; exiting boot services.
+============================================================
+  Hyperion OS  --  aarch64 microkernel  v0.1.0
 ```
-
-The stub currently halts after painting; the kernel-handover patch
-(`ExitBootServices` + jump to `kmain` with a populated `BootInfo`) is
-the next iteration.
 
 ## Bootable ISO and USB image
 
@@ -174,10 +173,13 @@ BdsDxe: starting Boot000? "UEFI ..."
 Hyperion EFI stub starting...
 GOP framebuffer @ 0x0000000058430000 size=0x0000000000300000
   resolution=800x600 stride=800 pixfmt=1
-Test pattern painted; halting.
+Loading embedded kernel ELF...
+Kernel loaded; exiting boot services.
+============================================================
+  Hyperion OS  --  aarch64 microkernel  v0.1.0
 ```
 
-If you see that, the boot chain is healthy and the artefact will boot
+If you see the kernel banner, the boot chain is healthy and the artefact will boot
 on real ARM64 UEFI hardware too. (`Ctrl-A x` quits QEMU.)
 
 ## Inspecting the ELF

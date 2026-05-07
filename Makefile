@@ -62,6 +62,7 @@ endif
 
 KERNEL_BIN  := target/$(TARGET)/$(PROFILE_DIR)/$(KERNEL_PKG)
 EFI_BIN     := target/$(EFI_TARGET)/$(PROFILE_DIR)/$(EFI_PKG).efi
+EFI_KERNEL_ENV := HYPERION_KERNEL_ELF=$(abspath $(KERNEL_BIN))
 QEMU_SERIAL := $(QEMU_BASE) -display none -serial stdio
 
 # Backwards-compat aliases (older docs referred to AAVMF_*).
@@ -89,7 +90,8 @@ build-all:
 
 efi:
 ifeq ($(ARCH),aarch64)
-	$(CARGO) build -p $(EFI_PKG) --target $(EFI_TARGET) --release
+	CARGO_PROFILE_RELEASE_DEBUG=false CARGO_PROFILE_RELEASE_STRIP=symbols $(CARGO) build -p $(KERNEL_PKG) --target $(TARGET) --release
+	$(EFI_KERNEL_ENV) $(CARGO) build -p $(EFI_PKG) --target $(EFI_TARGET) --release
 else
 	@echo "x86_64 EFI stub is not built separately - kernel boots via GRUB-EFI/Multiboot2"
 endif

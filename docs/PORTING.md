@@ -82,15 +82,14 @@ boot path goes through `efi-stub/` instead of straight `_start`:
    application loaded by the firmware (or written to
    `EFI/BOOT/BOOTAA64.EFI` on the ESP).
 2. It uses **Boot Services** to discover hardware: `LocateProtocol`
-   for `EFI_GRAPHICS_OUTPUT_PROTOCOL` (framebuffer), `GetMemoryMap`
-   for RAM, plus the ACPI table from `ConfigurationTable`.
-3. It populates `BootInfo`, calls `ExitBootServices`, then jumps to
-   the kernel ELF loaded into RAM.
+   for `EFI_GRAPHICS_OUTPUT_PROTOCOL` (framebuffer) and `GetMemoryMap`
+   for RAM.
+3. It loads the embedded kernel ELF into RAM, builds the UEFI handoff
+   block, calls `ExitBootServices`, then jumps to the kernel entry.
 
-The current stub only goes as far as **GOP discovery + paint test
-pattern** to prove the path end-to-end (see `make run-efi`). Wiring
-the kernel handover (`ExitBootServices` + jump to `kmain`) is the next
-patch in this series.
+The handoff block mirrors the fields the kernel needs in `BootInfo`:
+console defaults for QEMU virt, conventional RAM regions, GIC defaults,
+and the GOP framebuffer registered as monitor `fb0`.
 
 ## Wiring path 3: the QEMU `-kernel` shortcut
 
