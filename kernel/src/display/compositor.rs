@@ -66,23 +66,31 @@ impl Compositor {
 }
 
 fn blit(dst: &mut Framebuffer, src: &Framebuffer, x: i32, y: i32) {
-    for sy in 0..src.height {
+    let src_w = src.width;
+    let src_h = src.height;
+    let src_stride = src.stride;
+    let dst_stride = dst.stride;
+    let dst_w = dst.width;
+    let dst_h = dst.height;
+    let src_bytes = src.pixels();
+    let dst_bytes = dst.pixels_mut();
+    for sy in 0..src_h {
         let dy = y + sy as i32;
-        if dy < 0 || dy as u32 >= dst.height {
+        if dy < 0 || dy as u32 >= dst_h {
             continue;
         }
-        for sx in 0..src.width {
+        for sx in 0..src_w {
             let dx = x + sx as i32;
-            if dx < 0 || dx as u32 >= dst.width {
+            if dx < 0 || dx as u32 >= dst_w {
                 continue;
             }
-            let so = (sy * src.stride + sx * 4) as usize;
-            let do_ = (dy as u32 * dst.stride + dx as u32 * 4) as usize;
+            let so = (sy * src_stride + sx * 4) as usize;
+            let do_ = (dy as u32 * dst_stride + dx as u32 * 4) as usize;
             // Treat alpha=0 pixels as transparent.
-            if src.pixels[so + 3] == 0 {
+            if src_bytes[so + 3] == 0 {
                 continue;
             }
-            dst.pixels[do_..do_ + 4].copy_from_slice(&src.pixels[so..so + 4]);
+            dst_bytes[do_..do_ + 4].copy_from_slice(&src_bytes[so..so + 4]);
         }
     }
 }

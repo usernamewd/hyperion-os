@@ -78,6 +78,6 @@ impl Monitor {
     /// Copy the current framebuffer into a heap-allocated `Vec<u8>`.
     /// Used by virtual displays for snapshotting / remoting.
     pub fn snapshot(&self) -> alloc::vec::Vec<u8> {
-        self.fb.lock().pixels.clone()
+        self.fb.lock().pixels().to_vec()
     }
 }
