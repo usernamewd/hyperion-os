@@ -108,7 +108,8 @@ __boot_gdt_end:
 __boot_gdt_pointer:
     .word   __boot_gdt_end - __boot_gdt - 1
     .quad   __boot_gdt
-"#);
+"#
+);
 
 // 32-bit boot entry. Multiboot2 enters in protected mode with paging
 // off; we set up long mode, then far-jump into the 64-bit code below.
@@ -236,7 +237,8 @@ _start64:
     // Trampoline shouldn't return; if it does, halt.
 3:  hlt
     jmp     3b
-"#);
+"#
+);
 
 /// Trampoline called from `_start`. Mirror of the aarch64 trampoline.
 ///

@@ -105,7 +105,7 @@ pub fn init_context(
     // by the calling Thread; nothing else accesses it before the
     // first context switch into this thread.
     unsafe {
-        slot.write(__thread_trampoline as u64);
+        slot.write(__thread_trampoline as usize as u64);
     }
     ctx.rsp = (aligned_top - 8) as u64;
     ctx.r15 = (entry as usize) as u64;

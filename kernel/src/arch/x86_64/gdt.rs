@@ -108,8 +108,8 @@ pub fn install() {
 }
 
 const fn tss_descriptor_low(base: u64, limit: u64) -> u64 {
-    let access: u64 = 0x89;        // present, type=64-bit TSS available
-    let granularity: u64 = 0;      // limit < 1 MiB, byte-granularity
+    let access: u64 = 0x89; // present, type=64-bit TSS available
+    let granularity: u64 = 0; // limit < 1 MiB, byte-granularity
     (limit & 0xFFFF)
         | ((base & 0xFFFF) << 16)
         | (((base >> 16) & 0xFF) << 32)

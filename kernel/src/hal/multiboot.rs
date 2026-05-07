@@ -104,7 +104,7 @@ pub unsafe fn parse_or_fallback(mbi_ptr: u64, magic: u64) -> BootInfo {
 
     // SAFETY: caller asserted `mbi_ptr` is a valid Multiboot2 info ptr.
     let total_size = unsafe { core::ptr::read_volatile(mbi_ptr as *const u32) };
-    if total_size < 16 || total_size > 16 * 1024 * 1024 {
+    if !(16..=16 * 1024 * 1024).contains(&total_size) {
         return bi;
     }
 
@@ -127,8 +127,7 @@ pub unsafe fn parse_or_fallback(mbi_ptr: u64, magic: u64) -> BootInfo {
             TAG_MEMORY_MAP => {
                 // Body: u32 entry_size + u32 entry_version + entries.
                 let body = cur + (core::mem::size_of::<TagHeader>() as u64);
-                let entry_size =
-                    unsafe { core::ptr::read_volatile(body as *const u32) } as u64;
+                let entry_size = unsafe { core::ptr::read_volatile(body as *const u32) } as u64;
                 let entries_start = body + 8;
                 let entries_end = cur + (hdr.size as u64);
                 let mut p = entries_start;
@@ -148,8 +147,7 @@ pub unsafe fn parse_or_fallback(mbi_ptr: u64, magic: u64) -> BootInfo {
             TAG_BASIC_MEM_INFO => {
                 if !have_real_memory {
                     let body = cur + (core::mem::size_of::<TagHeader>() as u64);
-                    let mem_lower =
-                        unsafe { core::ptr::read_volatile(body as *const u32) } as u64;
+                    let mem_lower = unsafe { core::ptr::read_volatile(body as *const u32) } as u64;
                     let mem_upper =
                         unsafe { core::ptr::read_volatile((body + 4) as *const u32) } as u64;
                     let mut new_map = MemoryMap::empty();
@@ -171,8 +169,7 @@ pub unsafe fn parse_or_fallback(mbi_ptr: u64, magic: u64) -> BootInfo {
                     if fb.fb_type == 1 && fb.bpp == 32 {
                         // type 1 = direct RGB, packed bits.
                         let rgb = unsafe {
-                            &*((cur + core::mem::size_of::<FbTag>() as u64)
-                                as *const FbRgb)
+                            &*((cur + core::mem::size_of::<FbTag>() as u64) as *const FbRgb)
                         };
                         let format = if rgb.red_field_position >= 16 {
                             PixelFormat::Bgra8888
@@ -203,8 +200,7 @@ pub unsafe fn parse_or_fallback(mbi_ptr: u64, magic: u64) -> BootInfo {
                 // already aimed at an RSDP.
                 if bi.fw_table_addr == mbi_ptr {
                     let body = cur + (core::mem::size_of::<TagHeader>() as u64);
-                    bi.fw_table_addr =
-                        unsafe { core::ptr::read_volatile(body as *const u64) };
+                    bi.fw_table_addr = unsafe { core::ptr::read_volatile(body as *const u64) };
                 }
             }
             TAG_CMDLINE | TAG_BOOTLOADER_NAME | TAG_EFI64_IMAGE => {
@@ -214,13 +210,16 @@ pub unsafe fn parse_or_fallback(mbi_ptr: u64, magic: u64) -> BootInfo {
         }
 
         // Tags are 8-byte aligned.
-        cur = cur + ((hdr.size as u64 + 7) & !7);
+        cur += (hdr.size as u64 + 7) & !7;
     }
 
     // Console: NS16550 at COM1 always exists on PC platforms; the
     // fallback already filled this in. If a real serial discovery via
     // ACPI gets added later, override here.
-    if matches!(bi.console.kind, ConsoleKind::Pl011 | ConsoleKind::BcmMiniUart) {
+    if matches!(
+        bi.console.kind,
+        ConsoleKind::Pl011 | ConsoleKind::BcmMiniUart
+    ) {
         bi.console = ConsoleSpec {
             kind: ConsoleKind::Ns16550,
             regs: RegSpec::new(0x3F8, 8),

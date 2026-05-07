@@ -216,10 +216,7 @@ extern "C" fn hyperion_x86_trap_exception(tf: &mut TrapFrame) {
             tf.error_code,
             read_cr2(),
         ),
-        v => panic!(
-            "unknown trap vector {:#x}: RIP={:#x}",
-            v, tf.rip
-        ),
+        v => panic!("unknown trap vector {:#x}: RIP={:#x}", v, tf.rip),
     }
 }
 

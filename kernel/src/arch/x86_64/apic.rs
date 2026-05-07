@@ -98,11 +98,7 @@ pub fn init_timer(vector: u8, interval_ticks: u32) {
         // Divide by 16 — the conventional default; gives us ~1 tick /
         // µs on QEMU's emulated bus.
         write(base, REG_TIMER_DIVIDE, 0b0011);
-        write(
-            base,
-            REG_LVT_TIMER,
-            LVT_PERIODIC | (vector as u32),
-        );
+        write(base, REG_LVT_TIMER, LVT_PERIODIC | (vector as u32));
         write(base, REG_TIMER_INITIAL, interval_ticks);
     }
 }
