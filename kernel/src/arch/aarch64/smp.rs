@@ -64,11 +64,7 @@ pub fn start_secondaries() {
         let ret = super::psci::cpu_on(target_mpidr, entry, context_id);
         match ret {
             super::psci::PSCI_SUCCESS => {
-                log::info!(
-                    "smp: PSCI CPU_ON cpu#{} -> entry={:#x} ok",
-                    cpu_id,
-                    entry
-                );
+                log::info!("smp: PSCI CPU_ON cpu#{} -> entry={:#x} ok", cpu_id, entry);
                 woken += 1;
             }
             super::psci::PSCI_INVALID_PARAMETERS | super::psci::PSCI_DENIED => {

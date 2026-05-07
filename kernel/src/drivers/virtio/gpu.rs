@@ -332,10 +332,8 @@ pub fn init(base: usize) -> Result<(), &'static str> {
         },
         entry,
     );
-    let resp = dev.cmd::<(ResourceAttachBacking, MemEntry), CtrlHdr>(
-        &req,
-        core::mem::size_of::<CtrlHdr>(),
-    );
+    let resp = dev
+        .cmd::<(ResourceAttachBacking, MemEntry), CtrlHdr>(&req, core::mem::size_of::<CtrlHdr>());
     if !resp_ok_nodata(&resp) {
         return Err("virtio-gpu: RESOURCE_ATTACH_BACKING failed");
     }

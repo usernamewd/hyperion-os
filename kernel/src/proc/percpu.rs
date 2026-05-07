@@ -31,9 +31,8 @@ struct PerCpuSlot {
     cpu_id: u32,
 }
 
-static PER_CPU: Mutex<[Option<PerCpuSlot>; MAX_CPUS]> = Mutex::new([
-    None, None, None, None, None, None, None, None,
-]);
+static PER_CPU: Mutex<[Option<PerCpuSlot>; MAX_CPUS]> =
+    Mutex::new([None, None, None, None, None, None, None, None]);
 
 /// Called from each CPU's boot path very early — once a stack is set up
 /// but before we touch the heap. Stores the logical id in the per-CPU

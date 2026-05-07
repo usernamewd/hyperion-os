@@ -186,14 +186,7 @@ impl Transport {
 
     /// Configure a virtqueue with descriptor / driver / device ring
     /// physical addresses and the chosen ring size, then mark it ready.
-    pub fn queue_configure(
-        &self,
-        queue_idx: u32,
-        size: u32,
-        desc: u64,
-        driver: u64,
-        device: u64,
-    ) {
+    pub fn queue_configure(&self, queue_idx: u32, size: u32, desc: u64, driver: u64, device: u64) {
         self.w32(REG_QUEUE_SEL, queue_idx);
         self.w32(REG_QUEUE_NUM, size);
         self.w32(REG_QUEUE_DESC_LOW, desc as u32);

@@ -363,12 +363,7 @@ fn cmd_blk(_args: &[&str], _hist: &[String]) {
         return;
     }
     for (i, sectors) in devs {
-        kprintln!(
-            "  block#{:<2} sectors={} ({} KiB)",
-            i,
-            sectors,
-            sectors / 2
-        );
+        kprintln!("  block#{:<2} sectors={} ({} KiB)", i, sectors, sectors / 2);
     }
     kprintln!("Try `cat /blk/info` and `cat /blk/sector0` for the seeded blockfs view.");
 }
