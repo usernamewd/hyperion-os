@@ -69,12 +69,14 @@ EOF
 
 echo "==> building hybrid ISO at $OUT"
 mkdir -p "$(dirname "$OUT")"
+# Pass --volid through mkisofs's -V (grub-mkrescue forwards args after `--`
+# straight to xorriso -as mkisofs); older xorriso builds don't recognise
+# `--volid=` directly.
 grub-mkrescue \
     --output="$OUT" \
-    --volid="$VOLID" \
     "$STAGE" \
     -- \
-    -as mkisofs \
+    -volid "$VOLID" \
     2>&1 | sed 's/^/    /'
 
 ISO_SIZE=$(stat -c '%s' "$OUT")
