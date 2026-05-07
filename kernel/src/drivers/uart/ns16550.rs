@@ -8,12 +8,22 @@
 //! `RegSpec.size` and a small heuristic, but if the board reports a
 //! 0x100-aligned register block we treat it as 32-bit-stride which is
 //! the modern convention.
+//!
+//! On x86_64 the same chip lives behind I/O ports (0x3F8 = COM1,
+//! 0x2F8 = COM2, …). Set [`Ns16550::port_io`] to use `in/out`
+//! instructions instead of MMIO; the rest of the register layout is
+//! identical.
 
 use super::Console;
 
 pub struct Ns16550 {
     base: usize,
     stride: usize,
+    /// When true, address `base..base+stride*N` as legacy x86 I/O
+    /// ports (`in`/`out`) rather than memory-mapped registers. Always
+    /// false on aarch64 — port I/O doesn't exist there.
+    #[cfg_attr(not(target_arch = "x86_64"), allow(dead_code))]
+    port_io: bool,
 }
 
 const RHR: usize = 0; // RX (read)
@@ -30,6 +40,8 @@ const LSR_THRE: u8 = 1 << 5;
 const LSR_DR: u8 = 1 << 0;
 
 impl Ns16550 {
+    /// MMIO constructor.
+    ///
     /// # Safety
     /// `base` must be the physical address of a 16550-compatible UART
     /// register block, identity-mapped for the kernel's lifetime.
@@ -37,6 +49,23 @@ impl Ns16550 {
         Self {
             base,
             stride: if stride == 0 { 1 } else { stride },
+            port_io: false,
+        }
+    }
+
+    /// Port-I/O constructor for x86 platforms (COM1=0x3F8, COM2=0x2F8,
+    /// …).
+    ///
+    /// # Safety
+    /// `port` must be the base I/O port of a 16550-compatible UART. We
+    /// program 8N1 / 115200 in [`Self::init`] before any caller pokes
+    /// the device.
+    #[cfg(target_arch = "x86_64")]
+    pub const unsafe fn new_port(port: u16) -> Self {
+        Self {
+            base: port as usize,
+            stride: 1,
+            port_io: true,
         }
     }
 
@@ -72,6 +101,15 @@ impl Ns16550 {
     #[inline(always)]
     unsafe fn w(&self, reg: usize, val: u8) {
         // SAFETY: caller asserts the device is mapped.
+        #[cfg(target_arch = "x86_64")]
+        if self.port_io {
+            let port = (self.base + reg * self.stride) as u16;
+            // SAFETY: legacy I/O port writes always succeed in ring 0.
+            unsafe {
+                crate::arch::x86_64::outb(port, val);
+            }
+            return;
+        }
         unsafe {
             let p = (self.base + reg * self.stride) as *mut u8;
             core::ptr::write_volatile(p, val)
@@ -81,6 +119,14 @@ impl Ns16550 {
     #[inline(always)]
     unsafe fn r(&self, reg: usize) -> u8 {
         // SAFETY: caller asserts the device is mapped.
+        #[cfg(target_arch = "x86_64")]
+        if self.port_io {
+            let port = (self.base + reg * self.stride) as u16;
+            // SAFETY: legacy I/O port reads always succeed in ring 0.
+            unsafe {
+                return crate::arch::x86_64::inb(port);
+            }
+        }
         unsafe {
             let p = (self.base + reg * self.stride) as *const u8;
             core::ptr::read_volatile(p)
