@@ -46,6 +46,17 @@ pub fn init() {
     }
 }
 
+/// Per-CPU bring-up for a secondary CPU. The boot CPU's [`init`] has
+/// already configured the distributor; each secondary just needs to
+/// wake its own CPU interface (and re-distributor on GICv3).
+pub fn init_per_cpu() {
+    match crate::hal::info().intc.kind {
+        IntcKind::GicV2 => v2::init_per_cpu(),
+        IntcKind::GicV3 => v3::init_per_cpu(),
+        IntcKind::Apic | IntcKind::Pic8259 => {}
+    }
+}
+
 /// Enable a Private Peripheral Interrupt (PPI), INTID 16..=31.
 pub fn enable_ppi(intid: u32) {
     debug_assert!((16..32).contains(&intid));

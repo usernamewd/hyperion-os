@@ -53,9 +53,24 @@ pub unsafe fn init(gicd: usize, gicc: usize) {
     // Enable the distributor.
     unsafe { w32(gicd + GICD_CTLR, 1) };
     // Lower priority mask so any priority can fire, then enable the CPU
-    // interface.
+    // interface for the boot CPU.
     unsafe { w32(gicc + GICC_PMR, 0xff) };
     unsafe { w32(gicc + GICC_CTLR, 1) };
+}
+
+/// Per-CPU bring-up for a secondary. The distributor is already
+/// configured by [`init`]; each secondary just unmasks priorities and
+/// enables its own CPU interface (`GICC_*` is banked per-CPU on v2).
+pub fn init_per_cpu() {
+    let s = STATE.lock();
+    if s.gicc == 0 {
+        return;
+    }
+    // SAFETY: gicc is mapped MMIO, banked per-CPU.
+    unsafe {
+        w32(s.gicc + GICC_PMR, 0xff);
+        w32(s.gicc + GICC_CTLR, 1);
+    }
 }
 
 /// Enable PPI `intid` (16..=31) at the distributor.

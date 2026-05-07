@@ -5,12 +5,14 @@
 //! U-Boot, the EFI stub, or a future Pi mailbox loader. We do the
 //! minimum amount of work needed before transferring to Rust:
 //!
-//! * Park secondary CPUs (we boot single-core; SMP is a follow-up).
-//! * Drop to EL1 if we entered at EL2 (QEMU `virt` does, U-Boot's
-//!   default does, most boot firmware does).
-//! * Set up SP, zero BSS, install a tiny early exception vector (so
-//!   accidental traps before `late_init` halt cleanly), and call into
-//!   the Rust trampoline.
+//! * **Boot CPU** (MPIDR Aff0 == 0): drop to EL1 if needed, set up SP,
+//!   zero BSS, install the early exception vector, and call into the
+//!   Rust trampoline that runs [`crate::kmain`].
+//! * **Secondary CPUs** (MPIDR Aff0 != 0): if entered cold by QEMU
+//!   before any PSCI CPU_ON has fired, park ourselves at `wfe`. When
+//!   PSCI CPU_ON eventually points us at [`_start_secondary`] we drop
+//!   to EL1, take a per-CPU stack out of `__secondary_stacks`, and
+//!   tail-call [`hyperion_kernel_secondary_main`].
 //!
 //! The trampoline parses the device-tree blob handed in `x0` (when
 //! present) and instantiates the HAL — including the active console
@@ -22,6 +24,12 @@
 //! requires it (U-Boot's `booti`, ARM's `kernel8.img`, etc.).
 
 use core::arch::global_asm;
+
+/// Maximum number of CPUs that can be brought online via PSCI CPU_ON.
+/// Must match [`crate::proc::percpu::MAX_CPUS`]. Each gets a 16 KiB
+/// secondary stack reserved in `.bss`.
+pub const MAX_CPUS: usize = 8;
+const SECONDARY_STACK_SIZE: usize = 16 * 1024;
 
 // `_start` is written in raw assembly so we can guarantee instruction
 // ordering and avoid any compiler-inserted prologue before the stack is set
@@ -43,9 +51,13 @@ _start:
     // until kmain is called.
     mov     x19, x0
 
-    // ---- Park secondary CPUs ----
-    // MPIDR_EL1[7:0] is Aff0 for the simple uniprocessor cluster QEMU
-    // builds; non-zero => secondary => sleep forever.
+    // ---- Park cold-booted secondary CPUs ----
+    // MPIDR_EL1[7:0] is Aff0 for QEMU virt's flat cluster. If we landed
+    // here on a secondary because firmware enters every core at the
+    // same address (rather than via PSCI CPU_ON pointing at
+    // _start_secondary), park at WFE forever. The boot CPU's SMP code
+    // will only ever wake secondaries via PSCI CPU_ON, never relying
+    // on this cold-park path being woken up.
     mrs     x1, mpidr_el1
     and     x1, x1, #0xff
     cbnz    x1, 2f
@@ -128,6 +140,82 @@ __early_vectors:
     b       2b
     .endr
 "#
+);
+
+// Secondary CPU entry. PSCI CPU_ON points each woken CPU at this label
+// with x0 = context_id (we pass the secondary's logical id). We drop to
+// EL1 if we landed at EL2, find our per-CPU stack, and tail-call Rust.
+core::arch::global_asm!(
+    r#"
+    .section .text.boot, "ax"
+    .globl _start_secondary
+    .type _start_secondary, @function
+_start_secondary:
+    // x0 = CPU logical id (PSCI context_id). Stash in a callee-saved reg.
+    mov     x19, x0
+
+    // ---- Drop to EL1 if firmware delivered us at EL2 ----
+    mrs     x1, CurrentEL
+    lsr     x1, x1, #2
+    cmp     x1, #2
+    b.ne    1f
+    mov     x1, #(1 << 31)
+    msr     hcr_el2, x1
+    mov     x1, #0x0800
+    movk    x1, #0x30d0, lsl #16
+    msr     sctlr_el1, x1
+    mov     x1, #0x3c5
+    msr     spsr_el2, x1
+    adr     x1, 1f
+    msr     elr_el2, x1
+    eret
+
+1:  // ---- Now at EL1 ----
+
+    // Enable FP/SIMD at EL1/EL0 so the compiler's emitted SIMD memcpy
+    // and 128-bit moves don't trap.
+    mov     x1, #(3 << 20)
+    msr     cpacr_el1, x1
+    isb
+
+    // Each secondary takes a 16 KiB slice of __secondary_stacks indexed
+    // by its logical id (x19). __secondary_stacks lives in .bss and was
+    // zeroed by the boot CPU before any PSCI CPU_ON runs.
+    adrp    x1, __secondary_stacks
+    add     x1, x1, :lo12:__secondary_stacks
+    mov     x2, #16384
+    mul     x3, x19, x2
+    add     x1, x1, x3
+    add     x1, x1, x2
+    mov     sp, x1
+
+    // Install the early exception vector for this CPU too.
+    adrp    x1, __early_vectors
+    add     x1, x1, :lo12:__early_vectors
+    msr     vbar_el1, x1
+    isb
+
+    // Tail-call Rust with the logical id.
+    mov     x0, x19
+    bl      hyperion_kernel_secondary_main
+
+2:  wfe
+    b       2b
+    .size _start_secondary, . - _start_secondary
+"#
+);
+
+// Per-CPU stacks for secondaries. Reserved in .bss (zeroed by the boot
+// CPU's `.bss` clear pass before any PSCI CPU_ON request fires).
+core::arch::global_asm!(
+    r#"
+    .section .bss, "aw", @nobits
+    .balign 16
+    .globl __secondary_stacks
+__secondary_stacks:
+    .skip {0}
+"#,
+    const SECONDARY_STACK_SIZE * MAX_CPUS,
 );
 
 /// Trampoline called from `_start`. Exists so that `_start` can be raw

@@ -136,7 +136,17 @@ pub fn kmain() -> ! {
     display::init();
     log::info!("services: ipc / fs / display initialised");
 
-    // 6. Spawn the shell as a kernel task and enter the scheduler.
+    // 6. Probe and bring up virtio devices on aarch64 (block, net, gpu).
+    //    Each device registers itself with the relevant subsystem
+    //    (block-device-backed FS, network stack, display compositor).
+    drivers::init_late();
+    log::info!("drivers: virtio probe done");
+
+    // 7. Wake the secondary CPUs. On aarch64 this issues PSCI CPU_ON;
+    //    on x86_64 it is a no-op (we boot only the BSP for now).
+    arch::start_secondaries();
+
+    // 8. Spawn the shell as a kernel task and enter the scheduler.
     shell::spawn();
     log::info!("shell spawned; handing control to the scheduler");
 

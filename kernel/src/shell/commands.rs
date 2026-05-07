@@ -99,6 +99,32 @@ static COMMANDS: &[Command] = &[
         help: "power off the machine",
         run: cmd_shutdown,
     },
+    Command {
+        name: "smp",
+        help: "show online CPUs",
+        run: cmd_smp,
+    },
+    Command {
+        name: "blk",
+        help: "list registered block devices",
+        run: cmd_blk,
+    },
+    Command {
+        name: "net",
+        help: "list registered net devices / poll for echo",
+        run: cmd_net,
+    },
+    Command {
+        name: "gpu",
+        help: "draw a colour bar on the virtio-gpu monitor and flush",
+        run: cmd_gpu,
+    },
+    #[cfg(target_arch = "aarch64")]
+    Command {
+        name: "user",
+        help: "drop a thread to EL0 and exercise the SVC dispatcher",
+        run: cmd_user,
+    },
 ];
 
 /// Run a single line. Splits on whitespace; dispatches to a [`Command`] or
@@ -313,4 +339,108 @@ fn cmd_reboot(_args: &[&str], _hist: &[String]) {
 fn cmd_shutdown(_args: &[&str], _hist: &[String]) {
     kprintln!("shutdown requested...");
     crate::arch::system_off();
+}
+
+fn cmd_smp(_args: &[&str], _hist: &[String]) {
+    use crate::proc::percpu;
+    let cur = percpu::current_cpu_id();
+    let online = percpu::online_cpus();
+    kprintln!(
+        "boot cpu = {}, online count = {}, mask = {:#018b}",
+        cur,
+        percpu::online_count(),
+        percpu::online_mask()
+    );
+    for c in online {
+        kprintln!("  cpu{} online", c);
+    }
+}
+
+fn cmd_blk(_args: &[&str], _hist: &[String]) {
+    let devs = crate::drivers::block::snapshot();
+    if devs.is_empty() {
+        kprintln!("(no block devices)");
+        return;
+    }
+    for (i, sectors) in devs {
+        kprintln!("  block#{:<2} sectors={} ({} KiB)", i, sectors, sectors / 2);
+    }
+    kprintln!("Try `cat /blk/info` and `cat /blk/sector0` for the seeded blockfs view.");
+}
+
+fn cmd_net(args: &[&str], _hist: &[String]) {
+    let devs = crate::drivers::net::snapshot();
+    if devs.is_empty() {
+        kprintln!("(no net devices)");
+        return;
+    }
+    for (i, mac) in &devs {
+        kprintln!(
+            "  net#{:<2} mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+            i,
+            mac[0],
+            mac[1],
+            mac[2],
+            mac[3],
+            mac[4],
+            mac[5]
+        );
+    }
+    if matches!(args.first().copied(), Some("poll")) {
+        kprintln!("polling for one frame...");
+        crate::drivers::net::poll_echo();
+    }
+}
+
+fn cmd_gpu(_args: &[&str], _hist: &[String]) {
+    #[cfg(target_arch = "aarch64")]
+    {
+        let dev = match crate::drivers::virtio::gpu::primary() {
+            Some(d) => d,
+            None => {
+                kprintln!("no virtio-gpu device registered");
+                return;
+            }
+        };
+        let (w, h) = dev.dimensions();
+        dev.with_pixels(|pixels, w, h| {
+            // Vertical colour bars: red, green, blue, white.
+            let bands = [
+                [0u8, 0, 0xff, 0],
+                [0, 0xff, 0, 0],
+                [0xff, 0, 0, 0],
+                [0xff, 0xff, 0xff, 0],
+            ];
+            let bw = w as usize / bands.len();
+            for y in 0..h as usize {
+                for (bi, band) in bands.iter().enumerate() {
+                    let x0 = bi * bw;
+                    let x1 = if bi + 1 == bands.len() {
+                        w as usize
+                    } else {
+                        x0 + bw
+                    };
+                    for x in x0..x1 {
+                        let i = (y * w as usize + x) * 4;
+                        pixels[i] = band[0];
+                        pixels[i + 1] = band[1];
+                        pixels[i + 2] = band[2];
+                        pixels[i + 3] = band[3];
+                    }
+                }
+            }
+        });
+        dev.flush();
+        kprintln!("virtio-gpu: drew {}x{} colour bars and flushed", w, h);
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        kprintln!("gpu: virtio-gpu only wired on aarch64 currently");
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn cmd_user(_args: &[&str], _hist: &[String]) {
+    let tid = crate::proc::user::spawn_demo();
+    kprintln!("spawned EL0 user demo as tid {}", tid);
 }
