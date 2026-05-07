@@ -1,9 +1,10 @@
 //! Hyperion OS microkernel library.
 //!
-//! Hyperion is a small aarch64 microkernel inspired by HarmonyOS / L4-family
-//! systems. It is designed to be **integratable**: the kernel proper provides
-//! a minimal trusted computing base (boot, MMU, scheduler, IPC, capabilities)
-//! and exposes well-defined extension points for layering on:
+//! Hyperion is a small microkernel inspired by HarmonyOS / L4-family
+//! systems. It runs on aarch64 and amd64/x86_64. It is designed to be
+//! **integratable**: the kernel proper provides a minimal trusted
+//! computing base (boot, MMU, scheduler, IPC, capabilities) and exposes
+//! well-defined extension points for layering on:
 //!
 //! * Drivers (UART, framebuffer, GPU, etc.)
 //! * Filesystems (ramfs in-tree; VFS lets you plug in more)
@@ -64,11 +65,16 @@ pub mod ui;
 
 pub use hyperion_os_api as api;
 
+#[cfg(target_arch = "aarch64")]
+const ARCH_NAME: &str = "aarch64";
+#[cfg(target_arch = "x86_64")]
+const ARCH_NAME: &str = "x86_64";
+
 /// Kernel banner printed on boot.
 pub const BANNER: &str = concat!(
     "\r\n",
     "============================================================\r\n",
-    "  Hyperion OS  --  aarch64 microkernel  v",
+    "  Hyperion OS  microkernel  v",
     env!("CARGO_PKG_VERSION"),
     "\r\n",
     "  (c) Hyperion contributors. MIT OR Apache-2.0.\r\n",
@@ -96,12 +102,13 @@ pub fn kmain() -> ! {
     // kernel believes it's running on. Useful when porting.
     let bi = hal::info();
     log::info!(
-        "hal: console={:?}@{:#x} gic={:?}@{:#x} dtb={:#x} ram_total={} MiB",
+        "hal: arch={} console={:?}@{:#x} intc={:?}@{:#x} fw_table={:#x} ram_total={} MiB",
+        ARCH_NAME,
         bi.console.kind,
         bi.console.regs.base,
-        bi.gic.version,
-        bi.gic.dist.base,
-        bi.dtb_addr,
+        bi.intc.kind,
+        bi.intc.primary.base,
+        bi.fw_table_addr,
         bi.memory.total_bytes() / (1024 * 1024)
     );
 
@@ -112,9 +119,12 @@ pub fn kmain() -> ! {
     mm::init();
     log::info!("memory: PMM ready, heap online");
 
-    // 3. Architecture-specific late init: exception vectors, timer, GIC.
-    arch::aarch64::late_init();
-    log::info!("arch: exceptions + timer + GIC initialised");
+    // 3. Architecture-specific late init: exception vectors, timer,
+    //    interrupt controller. The arch facade dispatches to whichever
+    //    backend is being compiled (aarch64::late_init or
+    //    x86_64::late_init).
+    arch::late_init();
+    log::info!("arch: exceptions + timer + interrupt controller initialised");
 
     // 4. Process / scheduler bookkeeping.
     proc::init();

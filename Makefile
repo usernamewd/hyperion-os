@@ -1,52 +1,78 @@
 # Hyperion OS top-level Makefile.
 #
+# Hyperion targets two architectures: aarch64 (ARMv8) and x86_64
+# (amd64). Choose between them with `ARCH=`:
+#
+#   make ARCH=aarch64 ...   (default)
+#   make ARCH=x86_64 ...
+#
 # Common targets:
-#   make build      - build the kernel (release)
-#   make debug      - build the kernel (dev profile)
-#   make efi        - build the UEFI boot stub (.efi PE)
-#   make esp        - assemble a FAT32 EFI System Partition tree
-#   make iso        - assemble a hybrid ARM64 UEFI bootable ISO
-#   make usb-img    - assemble a raw GPT disk image flashable via Rufus / dd
-#   make run        - boot under QEMU (serial-only)
-#   make run-gfx    - boot under QEMU with a virtio-gpu display window
-#   make run-efi    - boot the EFI stub under QEMU + AAVMF UEFI firmware
-#   make run-iso    - boot the ISO under QEMU + AAVMF (CD-ROM path)
-#   make run-usb    - boot the raw USB image under QEMU + AAVMF
-#   make clippy     - run clippy with -D warnings
-#   make fmt        - format all crates
-#   make doc        - build rustdoc for libos-api
-#   make clean      - cargo clean
+#   make build            - build the kernel for $(ARCH)
+#   make debug            - build the kernel (dev profile) for $(ARCH)
+#   make iso              - build a hybrid bootable ISO for $(ARCH)
+#                           (aarch64: UEFI EFI stub; x86_64: BIOS+UEFI GRUB)
+#   make run              - boot under QEMU (serial-only, -kernel handoff)
+#   make run-bios         - x86_64: boot ISO under QEMU SeaBIOS (legacy BIOS)
+#   make run-uefi         - boot ISO under QEMU + UEFI (OVMF for x86_64,
+#                           AAVMF for aarch64)
+#   make run-gfx          - boot under QEMU with a graphical display window
+#   make clippy           - run clippy with -D warnings (for $(ARCH))
+#   make clippy-all       - run clippy for both arches
+#   make build-all        - build the kernel for both arches
+#   make fmt              - format all crates
+#   make fmt-check        - check formatting without modifying
+#   make doc              - build rustdoc for libos-api
+#   make clean            - cargo clean
 
 CARGO       ?= cargo
 KERNEL_PKG  := hyperion-kernel
 EFI_PKG     := hyperion-efi-stub
-TARGET      := aarch64-unknown-none
-EFI_TARGET  := aarch64-unknown-uefi
+ARCH        ?= aarch64
 PROFILE     ?= release
 PROFILE_DIR := $(if $(filter release,$(PROFILE)),release,debug)
+
+ifeq ($(ARCH),aarch64)
+    TARGET      := aarch64-unknown-none
+    EFI_TARGET  := aarch64-unknown-uefi
+    QEMU        ?= qemu-system-aarch64
+    QEMU_BASE   := $(QEMU) -M virt -cpu cortex-a72 -smp 1 -m 512M -semihosting
+    QEMU_GFX    := $(QEMU_BASE) -serial stdio -device virtio-gpu-pci
+    UEFI_CODE   ?= /usr/share/AAVMF/AAVMF_CODE.fd
+    UEFI_VARS   ?= /usr/share/AAVMF/AAVMF_VARS.fd
+    EFI_BOOT_FN := BOOTAA64.EFI
+    ISO_OUT     := target/hyperion.iso
+    USB_IMG     := target/hyperion-usb.img
+else ifeq ($(ARCH),x86_64)
+    TARGET      := x86_64-unknown-none
+    EFI_TARGET  := x86_64-unknown-uefi
+    QEMU        ?= qemu-system-x86_64
+    QEMU_BASE   := $(QEMU) -M q35 -cpu qemu64 -smp 1 -m 512M -no-reboot -no-shutdown
+    QEMU_GFX    := $(QEMU_BASE) -serial stdio
+    UEFI_CODE   ?= /usr/share/OVMF/OVMF_CODE.fd
+    UEFI_VARS   ?= /usr/share/OVMF/OVMF_VARS.fd
+    EFI_BOOT_FN := BOOTX64.EFI
+    ISO_OUT     := target/hyperion-x86_64.iso
+    USB_IMG     := target/hyperion-x86_64-usb.img
+else
+    $(error unsupported ARCH=$(ARCH); choose aarch64 or x86_64)
+endif
+
 KERNEL_BIN  := target/$(TARGET)/$(PROFILE_DIR)/$(KERNEL_PKG)
 EFI_BIN     := target/$(EFI_TARGET)/$(PROFILE_DIR)/$(EFI_PKG).efi
+QEMU_SERIAL := $(QEMU_BASE) -display none -serial stdio
 
-QEMU        ?= qemu-system-aarch64
-QEMU_BASE   := $(QEMU) -M virt -cpu cortex-a72 -smp 1 -m 512M -semihosting
-QEMU_SERIAL := $(QEMU_BASE) -nographic
-QEMU_GFX    := $(QEMU_BASE) -serial stdio -device virtio-gpu-pci
+# Backwards-compat aliases (older docs referred to AAVMF_*).
+AAVMF_CODE  ?= $(UEFI_CODE)
+AAVMF_VARS  ?= $(UEFI_VARS)
 
-# UEFI firmware images shipped by qemu-efi-aarch64 (Ubuntu/Debian) or
-# AAVMF (RedHat/Fedora). Override with AAVMF_CODE / AAVMF_VARS if you
-# keep them somewhere else.
-AAVMF_CODE  ?= /usr/share/AAVMF/AAVMF_CODE.fd
-AAVMF_VARS  ?= /usr/share/AAVMF/AAVMF_VARS.fd
+ESP_DIR     := target/esp-$(ARCH)
+ESP_VARS    := target/$(ARCH)-VARS.fd
+ISO_VARS    := target/$(ARCH)-VARS_iso.fd
+USB_VARS    := target/$(ARCH)-VARS_usb.fd
 
-ESP_DIR     := target/esp
-ESP_VARS    := target/AAVMF_VARS.fd
-ISO_OUT     := target/hyperion.iso
-USB_IMG     := target/hyperion-usb.img
-ISO_VARS    := target/AAVMF_VARS_iso.fd
-USB_VARS    := target/AAVMF_VARS_usb.fd
-
-.PHONY: build debug efi esp iso usb-img run run-gfx run-efi run-iso run-usb \
-        clippy fmt fmt-check doc clean
+.PHONY: build debug build-all efi esp iso usb-img run run-gfx run-efi \
+        run-iso run-usb run-bios run-uefi run-debug \
+        clippy clippy-all clippy-arch clippy-host fmt fmt-check doc clean
 
 build:
 	$(CARGO) build -p $(KERNEL_PKG) --target $(TARGET) --release
@@ -54,53 +80,116 @@ build:
 debug:
 	$(CARGO) build -p $(KERNEL_PKG) --target $(TARGET)
 
+build-all:
+	$(CARGO) build -p $(KERNEL_PKG) --target aarch64-unknown-none --release
+	$(CARGO) build -p $(KERNEL_PKG) --target x86_64-unknown-none --release
+
 efi:
+ifeq ($(ARCH),aarch64)
 	$(CARGO) build -p $(EFI_PKG) --target $(EFI_TARGET) --release
+else
+	@echo "x86_64 EFI stub is not built separately - kernel boots via GRUB-EFI/Multiboot2"
+endif
 
 esp: efi
+ifeq ($(ARCH),aarch64)
 	mkdir -p $(ESP_DIR)/EFI/BOOT
-	cp $(EFI_BIN) $(ESP_DIR)/EFI/BOOT/BOOTAA64.EFI
+	cp $(EFI_BIN) $(ESP_DIR)/EFI/BOOT/$(EFI_BOOT_FN)
+endif
 
 run: build
+ifeq ($(ARCH),aarch64)
+	$(QEMU_BASE) -nographic -kernel $(KERNEL_BIN)
+else
 	$(QEMU_SERIAL) -kernel $(KERNEL_BIN)
+endif
 
 run-gfx: build
 	$(QEMU_GFX) -kernel $(KERNEL_BIN)
 
+run-debug: debug
+ifeq ($(ARCH),aarch64)
+	$(QEMU_BASE) -nographic -kernel target/$(TARGET)/debug/$(KERNEL_PKG)
+else
+	$(QEMU_SERIAL) -kernel target/$(TARGET)/debug/$(KERNEL_PKG)
+endif
+
 run-efi: esp
-	cp $(AAVMF_VARS) $(ESP_VARS)
+ifeq ($(ARCH),aarch64)
+	cp $(UEFI_VARS) $(ESP_VARS)
 	$(QEMU_BASE) -display none -serial stdio -device ramfb \
-	    -drive if=pflash,format=raw,readonly=on,file=$(AAVMF_CODE) \
+	    -drive if=pflash,format=raw,readonly=on,file=$(UEFI_CODE) \
 	    -drive if=pflash,format=raw,file=$(ESP_VARS) \
 	    -drive if=virtio,format=raw,file=fat:rw:$(ESP_DIR),readonly=off
+else
+	@echo "x86_64 has no separate EFI stub; use 'make ARCH=x86_64 run-uefi' to boot the ISO under OVMF"
+	exit 1
+endif
 
 iso:
+ifeq ($(ARCH),aarch64)
 	./scripts/build-iso.sh $(ISO_OUT)
+else
+	./scripts/build-iso-x86_64.sh $(ISO_OUT)
+endif
 
 usb-img:
+ifeq ($(ARCH),aarch64)
 	./scripts/build-usb-img.sh $(USB_IMG)
+else
+	@echo "x86_64 USB image: 'make ARCH=x86_64 iso' produces a hybrid ISO that's directly dd-flashable."
+	exit 1
+endif
 
-run-iso: iso
-	cp $(AAVMF_VARS) $(ISO_VARS)
+run-bios: iso
+ifeq ($(ARCH),x86_64)
+	$(QEMU_SERIAL) -cdrom $(ISO_OUT)
+else
+	@echo "BIOS path is x86_64-only."
+	exit 1
+endif
+
+run-uefi: iso
+	cp $(UEFI_VARS) $(ISO_VARS)
+ifeq ($(ARCH),aarch64)
 	$(QEMU_BASE) -display none -serial stdio -device ramfb \
-	    -drive if=pflash,format=raw,readonly=on,file=$(AAVMF_CODE) \
+	    -drive if=pflash,format=raw,readonly=on,file=$(UEFI_CODE) \
 	    -drive if=pflash,format=raw,file=$(ISO_VARS) \
 	    -drive media=cdrom,file=$(ISO_OUT),if=none,id=cd0 \
 	    -device virtio-scsi-pci -device scsi-cd,drive=cd0
+else
+	$(QEMU_SERIAL) \
+	    -drive if=pflash,format=raw,readonly=on,file=$(UEFI_CODE) \
+	    -drive if=pflash,format=raw,file=$(ISO_VARS) \
+	    -cdrom $(ISO_OUT)
+endif
+
+run-iso: run-uefi
 
 run-usb: usb-img
-	cp $(AAVMF_VARS) $(USB_VARS)
+	cp $(UEFI_VARS) $(USB_VARS)
+ifeq ($(ARCH),aarch64)
 	$(QEMU_BASE) -display none -serial stdio -device ramfb \
-	    -drive if=pflash,format=raw,readonly=on,file=$(AAVMF_CODE) \
+	    -drive if=pflash,format=raw,readonly=on,file=$(UEFI_CODE) \
 	    -drive if=pflash,format=raw,file=$(USB_VARS) \
 	    -drive if=virtio,format=raw,file=$(USB_IMG)
-
-run-debug: debug
-	$(QEMU_SERIAL) -kernel target/$(TARGET)/debug/$(KERNEL_PKG)
+else
+	@echo "USB image is aarch64-only; on x86_64 the ISO is hybrid (dd it directly)."
+	exit 1
+endif
 
 clippy:
 	$(CARGO) clippy -p $(KERNEL_PKG) --target $(TARGET) --release -- -D warnings
 	$(CARGO) clippy -p hyperion-os-api -- -D warnings
+
+clippy-arch: clippy
+
+clippy-host:
+	$(CARGO) clippy -p hyperion-os-api -- -D warnings
+
+clippy-all: clippy-host
+	$(CARGO) clippy -p $(KERNEL_PKG) --target aarch64-unknown-none --release -- -D warnings
+	$(CARGO) clippy -p $(KERNEL_PKG) --target x86_64-unknown-none --release -- -D warnings
 
 fmt:
 	$(CARGO) fmt --all

@@ -1,38 +1,37 @@
 //! Kernel synchronisation primitives.
 //!
 //! Re-exports of [`spin`] types under shorter names so the rest of the
-//! kernel doesn't have to know which crate they come from. We also gate
-//! everything on a `WithIrqsOff` wrapper for cases where a critical
-//! section must be uninterruptible (the scheduler's runqueue, mainly).
+//! kernel doesn't have to know which crate they come from. We also
+//! provide an `IrqLock` guard wrapper for critical sections that must
+//! be uninterruptible (the scheduler's runqueue, mainly).
 
 pub use spin::{Mutex, MutexGuard, Once, RwLock};
 
-use crate::arch::aarch64::exceptions;
-
 /// RAII guard that masks IRQs while held.
 pub struct IrqLock {
-    daif: u64,
+    saved: u64,
 }
 
 impl IrqLock {
-    /// Mask IRQs and remember the previous DAIF value.
+    /// Mask IRQs and remember the previous interrupt-mask state.
     pub fn new() -> Self {
-        let daif: u64;
-        // SAFETY: reading and modifying DAIF at EL1 is privileged but
-        // always safe.
-        unsafe {
-            core::arch::asm!("mrs {0}, daif", out(reg) daif, options(nomem, nostack));
-        }
-        exceptions::disable_irqs();
-        Self { daif }
+        let saved = crate::arch::read_irq_mask();
+        crate::arch::disable_irqs();
+        Self { saved }
+    }
+}
+
+impl Default for IrqLock {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
 impl Drop for IrqLock {
     fn drop(&mut self) {
-        // SAFETY: restores previous DAIF.
+        // SAFETY: `saved` was produced by `read_irq_mask` above.
         unsafe {
-            core::arch::asm!("msr daif, {0}", in(reg) self.daif, options(nomem, nostack));
+            crate::arch::write_irq_mask(self.saved);
         }
     }
 }

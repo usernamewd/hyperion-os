@@ -60,10 +60,22 @@ pub unsafe fn install(spec: ConsoleSpec) {
                 BootConsole::Pl011(d)
             }
             ConsoleKind::Ns16550 => {
-                // Most modern 16550 instances use a 4-byte stride. We use
-                // 1 byte if the register window is small (<0x80 bytes),
-                // and 4 otherwise. Boards that need a different stride
-                // can be handled in DTB-driven probe later.
+                // x86 PCs put COM1..COM4 behind legacy I/O ports (0x3F8,
+                // 0x2F8, …). MMIO 16550 register blocks live at
+                // physical addresses well above 0x10000. Pick the right
+                // backend based on where the firmware says the device
+                // lives.
+                #[cfg(target_arch = "x86_64")]
+                if spec.regs.base < 0x1_0000 {
+                    let d = Ns16550::new_port(spec.regs.base as u16);
+                    d.init(spec.clock_hz);
+                    return install_inner(BootConsole::Ns16550(d));
+                }
+                // MMIO path: most modern 16550 instances use a 4-byte
+                // stride. We use 1 byte if the register window is small
+                // (<0x80 bytes), and 4 otherwise. Boards that need a
+                // different stride can be handled in DTB-driven probe
+                // later.
                 let stride = if spec.regs.size < 0x80 { 1 } else { 4 };
                 let d = Ns16550::new(spec.regs.base as usize, stride);
                 d.init(spec.clock_hz);
@@ -76,6 +88,10 @@ pub unsafe fn install(spec: ConsoleSpec) {
             }
         }
     };
+    install_inner(driver);
+}
+
+fn install_inner(driver: BootConsole) {
     *CONSOLE.lock() = Some(driver);
 }
 

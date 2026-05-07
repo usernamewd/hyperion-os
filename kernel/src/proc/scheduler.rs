@@ -90,7 +90,7 @@ pub fn yield_now() {
 /// Run the scheduler loop forever. The first time this is called it
 /// effectively becomes the idle thread on the boot CPU.
 pub fn run() -> ! {
-    crate::arch::aarch64::exceptions::enable_irqs();
+    crate::arch::enable_irqs();
     loop {
         // If there's work to do, switch to it; otherwise sleep waiting
         // for an interrupt.
@@ -98,8 +98,10 @@ pub fn run() -> ! {
         if has_work {
             yield_now();
         } else {
-            // SAFETY: WFI just stalls until an interrupt is pending.
-            unsafe { core::arch::asm!("wfi", options(nomem, nostack)) };
+            // Idle: stall until the next IRQ wakes us. Each architecture
+            // has its own native idle instruction (WFI on ARM, HLT on
+            // x86); the facade picks the right one.
+            crate::arch::idle();
         }
     }
 }

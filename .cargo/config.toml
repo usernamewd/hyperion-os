@@ -26,5 +26,19 @@ rustflags = [
 ]
 runner = "qemu-system-aarch64 -M virt -cpu cortex-a72 -smp 1 -m 512M -nographic -semihosting -kernel"
 
+[target.x86_64-unknown-none]
+# Same convention as aarch64: the linker script and link args are emitted
+# from `kernel/build.rs`. We set the relocation/code model and disable
+# every SIMD register class so the kernel never touches FP state in
+# IRQ context (no FXSAVE/XSAVE on every trap).
+rustflags = [
+    "-C", "target-cpu=x86-64",
+    "-C", "force-frame-pointers=yes",
+    "-C", "relocation-model=static",
+    "-C", "code-model=kernel",
+    "-C", "target-feature=-mmx,-sse,-sse2,-sse3,-ssse3,-sse4.1,-sse4.2,-avx,-avx2,+soft-float",
+]
+runner = "qemu-system-x86_64 -M q35 -cpu qemu64 -smp 1 -m 512M -serial stdio -display none -no-reboot -no-shutdown -kernel"
+
 [unstable]
 # (none — stable toolchain)

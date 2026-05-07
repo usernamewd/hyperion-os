@@ -33,6 +33,8 @@ fn format_version() -> alloc::string::String {
     let mut s = String::new();
     s.push_str("hyperion-os ");
     s.push_str(env!("CARGO_PKG_VERSION"));
-    s.push_str(" aarch64\r\n");
+    s.push(' ');
+    s.push_str(crate::ARCH_NAME);
+    s.push_str("\r\n");
     s
 }

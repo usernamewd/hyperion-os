@@ -91,12 +91,12 @@ static COMMANDS: &[Command] = &[
     },
     Command {
         name: "reboot",
-        help: "reset the machine via PSCI",
+        help: "reset the machine",
         run: cmd_reboot,
     },
     Command {
         name: "shutdown",
-        help: "power off via PSCI",
+        help: "power off the machine",
         run: cmd_shutdown,
     },
 ];
@@ -293,8 +293,8 @@ fn cmd_demo(_args: &[&str], _hist: &[String]) {
 }
 
 fn cmd_uptime(_args: &[&str], _hist: &[String]) {
-    let f = crate::arch::aarch64::timer::read_freq();
-    let c = crate::arch::aarch64::timer::read_count();
+    let f = crate::arch::timer_freq();
+    let c = crate::arch::timer_count();
     let ms = if f == 0 { 0 } else { (c * 1000) / f };
     kprintln!("up {} ms ({} ticks at {} Hz)", ms, c, f);
 }
@@ -307,10 +307,10 @@ fn cmd_history(_args: &[&str], hist: &[String]) {
 
 fn cmd_reboot(_args: &[&str], _hist: &[String]) {
     kprintln!("reboot requested...");
-    crate::arch::aarch64::psci::system_reset();
+    crate::arch::system_reset();
 }
 
 fn cmd_shutdown(_args: &[&str], _hist: &[String]) {
     kprintln!("shutdown requested...");
-    crate::arch::aarch64::psci::system_off();
+    crate::arch::system_off();
 }

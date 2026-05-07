@@ -1,10 +1,10 @@
 //! Syscall dispatch.
 //!
-//! User threads enter the kernel via `svc #0`, which lands in the
-//! synchronous-from-EL0 (or EL1, today) handler in
-//! [`crate::arch::aarch64::exceptions`]. That handler reads the syscall
-//! number from `x8` and the first six arguments from `x0..x5`, then calls
-//! [`dispatch`].
+//! User threads enter the kernel via the architecture's syscall
+//! instruction — `svc #0` on aarch64, `int 0x80` on x86_64 — which
+//! lands in the synchronous-trap handler in `arch::*::exceptions`. That
+//! handler reads the syscall number and the first six arguments, then
+//! calls [`dispatch`].
 //!
 //! This is the canonical place to add new syscalls. Numbers are stable
 //! enums in [`SyscallNr`] so the [`hyperion_os_api`] crate can re-export
@@ -50,19 +50,19 @@ fn sys_getchar() -> SyscallResult {
 }
 
 fn sys_uptime() -> SyscallResult {
-    let f = crate::arch::aarch64::timer::read_freq();
-    let c = crate::arch::aarch64::timer::read_count();
+    let f = crate::arch::timer_freq();
+    let c = crate::arch::timer_count();
     if f == 0 {
         0
     } else {
-        ((c * 1000) / f) as i64
+        ((c.saturating_mul(1000)) / f) as i64
     }
 }
 
 fn sys_reboot() -> SyscallResult {
-    crate::arch::aarch64::psci::system_reset();
+    crate::arch::system_reset();
 }
 
 fn sys_shutdown() -> SyscallResult {
-    crate::arch::aarch64::psci::system_off();
+    crate::arch::system_off();
 }
