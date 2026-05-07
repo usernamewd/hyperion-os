@@ -12,9 +12,13 @@
 # the provided Makefile.
 
 [target.aarch64-unknown-none]
+# NOTE: the linker script (`-Tkernel/linker.ld`) and `--no-eh-frame-hdr`
+# are emitted from `kernel/build.rs` via `cargo:rustc-link-arg-bins=...`
+# instead of from rustflags here. With `[profile.release] lto = "thin"`,
+# rustc silently drops `link-arg` rustflags during the final bin link
+# step (https://github.com/rust-lang/cargo/issues/9554), so build.rs
+# is the only reliable hook.
 rustflags = [
-    "-C", "link-arg=-Tkernel/linker.ld",
-    "-C", "link-arg=--no-eh-frame-hdr",
     "-C", "target-cpu=cortex-a72",
     "-C", "force-frame-pointers=yes",
     "-C", "relocation-model=static",
